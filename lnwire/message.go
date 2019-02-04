@@ -54,6 +54,7 @@ const (
 	MsgQueryChannelRange                   = 263
 	MsgReplyChannelRange                   = 264
 	MsgGossipTimestampRange                = 265
+	MsgSpanningTreeHello                   = 266
 )
 
 // String return the string representation of message type.
@@ -115,6 +116,8 @@ func (t MessageType) String() string {
 		return "ReplyChannelRange"
 	case MsgGossipTimestampRange:
 		return "GossipTimestampRange"
+	case MsgSpanningTreeHello:
+		return "SpanningTreeHello"
 	default:
 		return "<unknown>"
 	}
@@ -216,6 +219,8 @@ func makeEmptyMessage(msgType MessageType) (Message, error) {
 		msg = &ReplyChannelRange{}
 	case MsgGossipTimestampRange:
 		msg = &GossipTimestampRange{}
+	case MsgSpanningTreeHello:
+		msg = &SpanningTreeHello{}
 	default:
 		return nil, &UnknownMessage{msgType}
 	}
