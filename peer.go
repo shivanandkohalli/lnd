@@ -964,8 +964,8 @@ func (p *peer) readHandler() {
 	//
 	// TODO(conner): have peer store gossip syncer directly and bypass
 	// gossiper?
+	p.server.authGossiper.AddNewPeer(p)
 	p.initGossipSync()
-
 	discStream := newDiscMsgStream(p)
 	discStream.Start()
 	defer discStream.Stop()
@@ -1122,7 +1122,8 @@ out:
 			*lnwire.QueryShortChanIDs,
 			*lnwire.QueryChannelRange,
 			*lnwire.ReplyChannelRange,
-			*lnwire.ReplyShortChanIDsEnd:
+			*lnwire.ReplyShortChanIDsEnd,
+			*lnwire.SpanningTreeHello:
 
 			discStream.AddMsg(msg)
 

@@ -212,6 +212,9 @@ type AuthenticatedGossiper struct {
 	// selfKey is the identity public key of the backing Lightning node.
 	selfKey *btcec.PublicKey
 
+	// spannTreeID is the struct to store spanning tree related data and
+	// start its related operations.
+	spannTreeID *spanningTreeIdentity
 	// channelMtx is used to restrict the database access to one
 	// goroutine per channel ID. This is done to ensure that when
 	// the gossiper is handling an announcement, the db state stays
@@ -252,6 +255,7 @@ func New(cfg Config, selfKey *btcec.PublicKey) (*AuthenticatedGossiper, error) {
 		channelMtx:              multimutex.NewMutex(),
 		recentRejects:           make(map[uint64]struct{}),
 		peerSyncers:             make(map[routing.Vertex]*gossipSyncer),
+		spannTreeID:             newSpanTreeIdentity(selfKey, cfg.Broadcast),
 	}, nil
 }
 
@@ -422,6 +426,7 @@ func (d *AuthenticatedGossiper) Start() error {
 	d.wg.Add(1)
 	go d.networkHandler()
 
+	go d.spannTreeID.buildSpanningTree()
 	return nil
 }
 
@@ -507,6 +512,18 @@ func (d *AuthenticatedGossiper) ProcessRemoteAnnouncement(msg lnwire.Message,
 			return errChan
 		}
 
+		errChan <- nil
+		return errChan
+	case *lnwire.SpanningTreeHello:
+		log.Infof("Received Spanning Tree message with node ID %d", m.NodeID)
+		t := spanningTreeHello{
+			nodeID:     m.NodeID,
+			costToRoot: m.CostToRoot,
+			rootNodeID: m.RootNodeID,
+		}
+		select {
+		case d.spannTreeID.spanTreeChan <- t:
+		}
 		errChan <- nil
 		return errChan
 	}
@@ -1070,7 +1087,7 @@ func (d *AuthenticatedGossiper) networkHandler() {
 					return
 				}
 
-				// Process the network announcement to
+				// Process the network announcembent to
 				// determine if this is either a new
 				// announcement from our PoV or an edges to a
 				// prior vertex/edge we previously proceeded.
@@ -2600,4 +2617,21 @@ func (d *AuthenticatedGossiper) updateChannel(info *channeldb.ChannelEdgeInfo,
 	}
 
 	return chanAnn, chanUpdate, err
+}
+
+// AddNewPeer Updates information about the new peer which has joined in the
+// spanning tree related data structures.
+func (d *AuthenticatedGossiper) AddNewPeer(peer lnpeer.Peer) {
+	//TODO (shiva): Add data locks
+	log.Info("Adding new peer to spanning tree")
+	peerPubKey := peer.PubKey()
+	d.spannTreeID.connectedNodeState[d.spannTreeID.sha256ByteArray(peerPubKey[:])] = "D"
+	d.spannTreeID.connectedNodePubkey[d.spannTreeID.sha256ByteArray(peerPubKey[:])] = routing.NewVertex(peer.IdentityKey())
+	// Send a Spanning tree hello message to the newly connected peer
+	m := &lnwire.SpanningTreeHello{
+		NodeID:     d.spannTreeID.nodeSpanTree.nodeID,
+		RootNodeID: d.spannTreeID.nodeSpanTree.rootNodeID,
+		CostToRoot: d.spannTreeID.nodeSpanTree.costToRoot,
+	}
+	d.cfg.SendToPeer(peer.IdentityKey(), m)
 }
