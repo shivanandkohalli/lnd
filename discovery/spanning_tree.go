@@ -49,6 +49,11 @@ type spanningTreeIdentity struct {
 		msg ...lnwire.Message) error
 	// To store the latest hello message sent by a connected node
 	latestNodeHello map[uint32]spanningTreeHello
+	// A signal to trigger the processing of the received prefix embedding
+	// according to the speedy murmurs algorithm
+	processRecEmbChan chan bool
+	// Store the node ID of the node connected to the root port
+	rootPortNode uint32
 }
 
 func newSpanTreeIdentity(selfKey *btcec.PublicKey, broadCast func(skips map[routing.Vertex]struct{},
@@ -72,6 +77,7 @@ func newSpanTreeIdentity(selfKey *btcec.PublicKey, broadCast func(skips map[rout
 		latestNodeHello:     make(map[uint32]spanningTreeHello),
 		processHelloDelay:   time.Second * cfgProcessHelloDelay,
 		broadcast:           broadCast,
+		rootPortNode:        selfKeyHash,
 	}
 }
 
@@ -99,6 +105,10 @@ func (s *spanningTreeIdentity) buildSpanningTree() {
 			log.Infof("Number of received messages %d", len(s.receivedHelloMessage))
 			s.processHelloMessages()
 			s.printSpanningTreeIdentities()
+			// Send a signal to start processing the received prefix embeddings
+			select {
+			case s.processRecEmbChan <- true:
+			}
 		case <-logTimer.C:
 			//	s.printSpanningTreeIdentities()
 		}
@@ -163,6 +173,7 @@ func (s *spanningTreeIdentity) processHelloMessages() {
 		_, ok := s.connectedNodeState[s.receivedHelloMessage[bestRootIndex].nodeID]
 		if ok {
 			s.connectedNodeState[s.receivedHelloMessage[bestRootIndex].nodeID] = "R"
+			s.rootPortNode = s.receivedHelloMessage[bestRootIndex].nodeID
 		} else {
 			log.Info("Peer not registered in the spanning tree maps")
 		}
@@ -367,4 +378,9 @@ func (s *spanningTreeIdentity) printSpanningTreeIdentities() {
 	for k, v := range s.connectedNodeState {
 		log.Infof("Connected node %d, State %s", k, v)
 	}
+}
+
+// getRootPortID sends the ID of the node connected to the root port
+func (s *spanningTreeIdentity) getRootPortID() uint32 {
+	return s.rootPortNode
 }

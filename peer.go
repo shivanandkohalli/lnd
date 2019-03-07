@@ -1123,7 +1123,8 @@ out:
 			*lnwire.QueryChannelRange,
 			*lnwire.ReplyChannelRange,
 			*lnwire.ReplyShortChanIDsEnd,
-			*lnwire.SpanningTreeHello:
+			*lnwire.SpanningTreeHello,
+			*lnwire.PrefixEmbedding:
 
 			discStream.AddMsg(msg)
 

@@ -215,6 +215,14 @@ type AuthenticatedGossiper struct {
 	// spannTreeID is the struct to store spanning tree related data and
 	// start its related operations.
 	spannTreeID *spanningTreeIdentity
+
+	// smGossip handles the relavant gossip of the Speedy Murmurs routing
+	// algorithm.
+	smGossip *speedyMurmursGossip
+
+	// creates a map of node ID's to that of pubkey. Used while converting
+	// node ID to pubkey to send messages
+	peerPubkeysMap map[uint32]*btcec.PublicKey
 	// channelMtx is used to restrict the database access to one
 	// goroutine per channel ID. This is done to ensure that when
 	// the gossiper is handling an announcement, the db state stays
@@ -243,6 +251,7 @@ func New(cfg Config, selfKey *btcec.PublicKey) (*AuthenticatedGossiper, error) {
 		return nil, err
 	}
 
+	spannTreeID := newSpanTreeIdentity(selfKey, cfg.Broadcast)
 	return &AuthenticatedGossiper{
 		selfKey:                 selfKey,
 		cfg:                     &cfg,
@@ -255,7 +264,8 @@ func New(cfg Config, selfKey *btcec.PublicKey) (*AuthenticatedGossiper, error) {
 		channelMtx:              multimutex.NewMutex(),
 		recentRejects:           make(map[uint64]struct{}),
 		peerSyncers:             make(map[routing.Vertex]*gossipSyncer),
-		spannTreeID:             newSpanTreeIdentity(selfKey, cfg.Broadcast),
+		spannTreeID:             spannTreeID,
+		peerPubkeysMap:          make(map[uint32]*btcec.PublicKey),
 	}, nil
 }
 
@@ -426,7 +436,11 @@ func (d *AuthenticatedGossiper) Start() error {
 	d.wg.Add(1)
 	go d.networkHandler()
 
+	// TODO (shiva): Move this initialization to New()
+	smGossip := newSpeedyMurmurGossip(d.spannTreeID.nodeSpanTree.nodeID, d.spannTreeID, d.cfg.Broadcast, d.sendToPeerByHash)
+	d.smGossip = smGossip
 	go d.spannTreeID.buildSpanningTree()
+	go d.smGossip.startGossip()
 	return nil
 }
 
@@ -523,6 +537,13 @@ func (d *AuthenticatedGossiper) ProcessRemoteAnnouncement(msg lnwire.Message,
 		}
 		select {
 		case d.spannTreeID.spanTreeChan <- t:
+		}
+		errChan <- nil
+		return errChan
+	case *lnwire.PrefixEmbedding:
+		log.Infof("Received Prefix embeddings with node ID %d", m.NodeID)
+		select {
+		case d.smGossip.smGossipChan <- *m:
 		}
 		errChan <- nil
 		return errChan
@@ -2625,8 +2646,9 @@ func (d *AuthenticatedGossiper) AddNewPeer(peer lnpeer.Peer) {
 	//TODO (shiva): Add data locks
 	log.Info("Adding new peer to spanning tree")
 	peerPubKey := peer.PubKey()
-	d.spannTreeID.connectedNodeState[d.spannTreeID.sha256ByteArray(peerPubKey[:])] = "D"
-	d.spannTreeID.connectedNodePubkey[d.spannTreeID.sha256ByteArray(peerPubKey[:])] = routing.NewVertex(peer.IdentityKey())
+	peerPubKeyHash := d.spannTreeID.sha256ByteArray(peerPubKey[:])
+	d.spannTreeID.connectedNodeState[peerPubKeyHash] = "D"
+	d.spannTreeID.connectedNodePubkey[peerPubKeyHash] = routing.NewVertex(peer.IdentityKey())
 	// Send a Spanning tree hello message to the newly connected peer
 	m := &lnwire.SpanningTreeHello{
 		NodeID:     d.spannTreeID.nodeSpanTree.nodeID,
@@ -2634,4 +2656,29 @@ func (d *AuthenticatedGossiper) AddNewPeer(peer lnpeer.Peer) {
 		CostToRoot: d.spannTreeID.nodeSpanTree.costToRoot,
 	}
 	d.cfg.SendToPeer(peer.IdentityKey(), m)
+
+	// TODO (shiva): Store this map of public keys to node ID's in a single place
+	// Adding the peer also to the map, which will be useful while sending individual
+	// messages to the peeers
+	d.peerPubkeysMap[peerPubKeyHash] = peer.IdentityKey()
+	b, err := d.smGossip.registerPeer(peerPubKeyHash)
+	if err != nil {
+		log.Infof("Unable to register peer in Speedy murmur gossip %v", err)
+		return
+	}
+	s := lnwire.NewPrefixEmbedding(d.smGossip.nodeID, b)
+	d.cfg.SendToPeer(peer.IdentityKey(), s)
+
+}
+
+// A Wrapper function to send message to a peer where the peer is identified
+// by the sha256 hash of its public key
+func (d *AuthenticatedGossiper) sendToPeerByHash(pubKeyHash uint32, msg lnwire.Message) error {
+	identityKey, ok := d.peerPubkeysMap[pubKeyHash]
+	if !ok {
+		return errors.New("Peer not added in hash->pubkey map")
+	}
+
+	err := d.cfg.SendToPeer(identityKey, msg)
+	return err
 }
