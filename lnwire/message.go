@@ -56,6 +56,8 @@ const (
 	MsgGossipTimestampRange                = 265
 	MsgSpanningTreeHello                   = 266
 	MsgSpeedyPrefixEmbedding               = 267
+	MsgDynamicInfoProbeMess                = 268
+	MsgTestMessage                         = 269
 )
 
 // String return the string representation of message type.
@@ -121,6 +123,10 @@ func (t MessageType) String() string {
 		return "SpanningTreeHello"
 	case MsgSpeedyPrefixEmbedding:
 		return "SpeedyPrefixEmbedding"
+	case MsgDynamicInfoProbeMess:
+		return "DynamicInfoProbeMess"
+	case MsgTestMessage:
+		return "TestMessage"
 	default:
 		return "<unknown>"
 	}
@@ -226,6 +232,10 @@ func makeEmptyMessage(msgType MessageType) (Message, error) {
 		msg = &SpanningTreeHello{}
 	case MsgSpeedyPrefixEmbedding:
 		msg = &PrefixEmbedding{}
+	case MsgDynamicInfoProbeMess:
+		msg = &DynamicInfoProbeMess{}
+	case MsgTestMessage:
+		msg = &TestMessage{}
 	default:
 		return nil, &UnknownMessage{msgType}
 	}

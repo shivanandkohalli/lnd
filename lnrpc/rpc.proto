@@ -762,7 +762,6 @@ message SendRequest {
     timelock for the final hop.
     */
     int32 final_cltv_delta = 7;
-
     /**
     The maximum number of satoshis that will be paid as a fee of the payment.
     This value can be represented either as a percentage of the amount being
@@ -770,6 +769,8 @@ message SendRequest {
     send the payment.
     */
     FeeLimit fee_limit = 8;
+
+    repeated uint32 test_destination = 9;
 }
 message SendResponse {
     string payment_error = 1 [json_name = "payment_error"];
@@ -1814,6 +1815,7 @@ message AddInvoiceResponse {
     */
     string payment_request = 2 [json_name = "payment_request"];
 
+    repeated uint32 destination_address = 3 [json_name = "destination_address"];
     /**
     The "add" index of this invoice. Each newly created invoice will increment
     this index making it monotonically increasing. Callers to the

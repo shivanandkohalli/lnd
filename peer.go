@@ -1124,7 +1124,8 @@ out:
 			*lnwire.ReplyChannelRange,
 			*lnwire.ReplyShortChanIDsEnd,
 			*lnwire.SpanningTreeHello,
-			*lnwire.PrefixEmbedding:
+			*lnwire.PrefixEmbedding,
+			*lnwire.DynamicInfoProbeMess:
 
 			discStream.AddMsg(msg)
 
