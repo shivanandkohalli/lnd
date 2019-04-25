@@ -2,11 +2,17 @@ package discovery
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"math"
 	"math/rand"
+	"reflect"
+	"sync"
 	"time"
 
+	"github.com/coreos/bbolt"
+	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing"
 )
@@ -32,6 +38,12 @@ type speedyMurmursGossip struct {
 	// spanning tree
 	spannTree *spanningTreeIdentity
 
+	prefixMutex sync.RWMutex
+	// The prefix embeddings of all the nodes which are connected
+	// Warning: All the connected nodes will have an extra coordinate, thus
+	// strip the last coordinate and use it (This wont be the problem with
+	// current node)
+	// TODO (shiva): Fix the above issue
 	currentPrefixEmbedding map[uint32][]uint32
 
 	// List of nodes stored as a map who sent their prefix's in the current
@@ -41,12 +53,28 @@ type speedyMurmursGossip struct {
 	// by the sha256 hash of its public key
 	sendToPeer func(pubKeyHash uint32, msg lnwire.Message) error
 
+	// FetchLightningNode attempts to look up a target node by its identity
+	// public key. channeldb.ErrGraphNodeNotFound is returned if the node
+	// doesn't exist within the graph.
+	fetchLightningNode func(routing.Vertex) (*channeldb.LightningNode, error)
 	// This is the random 4 byte number(generated for every node that has
 	// opened a channel) that will be appended with the current prefix
 	// embedding of this node and sent to it.
 	randomNodeCoordinate map[uint32]uint32
 
-	rand *rand.Rand
+	// Stores a unique ID and a LightningPayment description until the dynamic
+	// information is probed along the route
+	dynamicInfoTable map[uint32]*routing.LightningPayment
+
+	// Stores ID -> NodeID
+	// When upstream query message is sent, this table stores the ID and the
+	// NodeID which sent the message. It will be used again when forwarding
+	// the downstream message
+	dynamicInfoFrwdTable map[uint32]uint32
+
+	// Channel to receive the dynamic info probe queries
+	dynInfoProbeChan chan lnwire.DynamicInfoProbeMess
+	rand             *rand.Rand
 
 	quit chan struct{}
 }
@@ -57,7 +85,7 @@ func (s *speedyMurmursGossip) stop() {
 
 // NewSpeedyMurmurGossip ....
 func newSpeedyMurmurGossip(nodeID uint32, spannTree *spanningTreeIdentity, broadCast func(skips map[routing.Vertex]struct{},
-	msg ...lnwire.Message) error, sendToPeer func(pubKeyHash uint32, msg lnwire.Message) error) *speedyMurmursGossip {
+	msg ...lnwire.Message) error, sendToPeer func(pubKeyHash uint32, msg lnwire.Message) error, fetchLightningNode func(routing.Vertex) (*channeldb.LightningNode, error)) *speedyMurmursGossip {
 	// TODO (shiva): Find a way that this channel gets assigned in their
 	// respective 'new' Methods
 	spannTree.processRecEmbChan = make(chan bool)
@@ -72,6 +100,10 @@ func newSpeedyMurmurGossip(nodeID uint32, spannTree *spanningTreeIdentity, broad
 		randomNodeCoordinate:   make(map[uint32]uint32),
 		rand:                   rand.New(rand.NewSource(time.Now().UnixNano())),
 		sendToPeer:             sendToPeer,
+		fetchLightningNode:     fetchLightningNode,
+		dynamicInfoTable:       make(map[uint32]*routing.LightningPayment),
+		dynamicInfoFrwdTable:   make(map[uint32]uint32),
+		dynInfoProbeChan:       make(chan lnwire.DynamicInfoProbeMess),
 		quit:                   make(chan struct{}),
 	}
 }
@@ -82,6 +114,8 @@ func (s *speedyMurmursGossip) initEmbedding() {
 }
 
 func (s *speedyMurmursGossip) getPrefixEmbedding() []uint32 {
+	s.prefixMutex.RLock()
+	defer s.prefixMutex.RUnlock()
 	return s.currentPrefixEmbedding[s.nodeID]
 }
 
@@ -116,9 +150,12 @@ func (s *speedyMurmursGossip) copyInt(a []uint32) {
 	s.currentPrefixEmbedding[s.nodeID] = temp
 }
 
+// Processes gossip messages related to SpeedyMurmurs
+// Initiates to process messages related to dynamic info probing
 // Note: This MUST be run as a goroutine
 func (s *speedyMurmursGossip) startGossip() {
 	s.initEmbedding()
+	go s.processDynProbeInfo()
 	logTimer := time.NewTicker(10 * time.Second)
 	for {
 		select {
@@ -133,6 +170,8 @@ func (s *speedyMurmursGossip) startGossip() {
 			// received value and broadcast to other nodes
 			//log.Infof("Current root port node is %d", rootPortNode)
 			if ok {
+				s.prefixMutex.Lock()
+
 				temp := make([]uint32, len(s.currentPrefixEmbedding[rootPortNode]))
 				copy(temp, s.currentPrefixEmbedding[rootPortNode])
 				s.currentPrefixEmbedding[s.nodeID] = temp
@@ -150,9 +189,11 @@ func (s *speedyMurmursGossip) startGossip() {
 					mess := lnwire.NewPrefixEmbedding(s.nodeID, t)
 					err = s.sendToPeer(nodeID, mess)
 					if err != nil {
-						log.Infof("Unable to send the embedding to %d", nodeID)
+						log.Infof("Error Unable to send the embedding to %d", nodeID)
 					}
 				}
+
+				s.prefixMutex.Unlock()
 			}
 
 			for k := range s.receivedPrefixNodes {
@@ -168,7 +209,9 @@ func (s *speedyMurmursGossip) startGossip() {
 
 			temp := make([]uint32, len(t))
 			copy(temp, t)
+			s.prefixMutex.Lock()
 			s.currentPrefixEmbedding[m.NodeID] = temp
+			s.prefixMutex.Unlock()
 			s.receivedPrefixNodes[m.NodeID] = struct{}{}
 			//log.Infof("Path embeddings received from %d %v %v", m.NodeID, t, s.currentPrefixEmbedding[m.NodeID])
 		case <-logTimer.C:
@@ -201,6 +244,9 @@ func (s *speedyMurmursGossip) byteToIntArray(b []byte) ([]uint32, error) {
 	return intArray[:], nil
 }
 
+// Converts an uint32 slice to a byte slice.
+// if appendInt is not 0, it gets appended to the byte slice else neglected
+// Returns byte slize of size 'embeddingByteSize'
 func (s *speedyMurmursGossip) intToByteArray(a []uint32, appendInt uint32) ([]byte, error) {
 
 	if appendInt == 0 && len(a) > embeddingByteSize/4 {
@@ -227,4 +273,359 @@ func (s *speedyMurmursGossip) intToByteArray(a []uint32, appendInt uint32) ([]by
 		}
 	}
 	return byteArray, nil
+}
+
+// func (s *speedyMurmursGossip) GetNextHop(dest []uint32, payment *routing.LightningPayment) (routing.Hop, error) {
+// 	s.prefixMutex.RLock()
+// 	defer s.prefixMutex.RUnlock()
+
+// 	// To store the next hop parameters. To be returned
+// 	var nextHop routing.Hop
+// 	var minDist uint8
+// 	minDist = math.MaxUint8
+// 	for nodeID, emb := range s.currentPrefixEmbedding {
+// 		dist := calcHopDistance(dest, emb)
+// 		if dist < minDist {
+// 			minDist = dist
+// 			nodePubKey, err := s.spannTree.getPubKeyFromHash(nodeID)
+// 			if err != nil {
+// 				log.Infof("Failed to retrieve pubkey for the node ID %d", nodeID)
+// 				continue
+// 			}
+// 			node, err := s.fetchLightningNode(routing.NewVertex(nodePubKey))
+// 			if err != nil {
+// 				log.Infof("Error while fetching Lighting node %v", err)
+// 				continue
+// 			}
+
+// 			// TODO(shiva): Validate whether this function loops through only the
+// 			// channels connecting to source or all?
+// 			err = node.ForEachChannel(nil, func(_ *bbolt.Tx, chanInfo *channeldb.ChannelEdgeInfo,
+// 				_, inEdge *channeldb.ChannelEdgePolicy) error {
+
+// 				// If there is no edge policy for this candidate
+// 				// node, skip.
+// 				if inEdge == nil {
+// 					return nil
+// 				}
+
+// 				nodeFee := computeFee(payment.Amount, inEdge)
+// 				amtToSend := payment.Amount + nodeFee
+// 				err := checkAmtValid(amtToSend, chanInfo, inEdge)
+// 				if err != nil {
+// 					log.Infof("%v", err)
+// 				} else {
+// 					// TODO(shiva): Calculate the full path fees and CLTV here
+// 					nextHop.AmtToForward = amtToSend
+// 					nextHop.OutgoingTimeLock = uint32(*payment.FinalCLTVDelta)
+// 					nextHop.ChannelID = chanInfo.ChannelID
+// 					nextHop.PubKeyBytes = routing.NewVertex(nodePubKey)
+// 				}
+// 				return nil
+// 			})
+// 		}
+// 	}
+// 	return nextHop, nil
+// }
+
+func (s *speedyMurmursGossip) getNextNodeInRoute(dest []uint32) (*channeldb.LightningNode, error) {
+	s.prefixMutex.RLock()
+	defer s.prefixMutex.RUnlock()
+
+	var minDist uint8
+	minDist = math.MaxUint8
+	var nextNode *channeldb.LightningNode
+
+	for nodeID, emb := range s.currentPrefixEmbedding {
+
+		// skip if the nodeID is that of current node
+		if nodeID == s.nodeID {
+			continue
+		}
+		// Truncating the last coordinate due to the way coordinates are stored
+		// Refer 'currentPrefixEmbedding'
+		if len(emb) > 0 {
+			emb = emb[:len(emb)-1]
+		}
+		dist := calcHopDistance(dest, emb)
+		if dist < minDist {
+			minDist = dist
+			nodePubKey, err := s.spannTree.getPubKeyFromHash(nodeID)
+			if err != nil {
+				log.Infof("Failed to retrieve pubkey for the node ID %d", nodeID)
+				continue
+			}
+			node, err := s.fetchLightningNode(routing.NewVertex(nodePubKey))
+			if err != nil {
+				log.Infof("Error while fetching Lighting node %v", err)
+				continue
+			}
+			nextNode = node
+		}
+	}
+
+	if nextNode == nil {
+		log.Infof("Map values %v", s.currentPrefixEmbedding)
+		return nil, errors.New("Error, Unable to find the next hop speedymurmurs")
+	}
+	// _, err := nextNode.PubKey()
+	// if err != nil {
+	// 	return nil, errors.New("Error fetching pubkey")
+	// }
+	return nextNode, nil
+}
+
+// calcHopDistance, calculate the hop distance according to the prefix
+// embeddings. Formula is:
+// Distance to node A from root+ Distance to node B from root- 2*Common path from root
+// The return value is of type uint8 as currently the embeddings can be a maximum of
+// 20. Thus, the max path length will be 20 + 20 -2*0 = 40
+func calcHopDistance(a []uint32, b []uint32) uint8 {
+	commonPathLength := 0
+	for i := 0; i < len(a) && i < len(b); i++ {
+		if a[i] != b[i] {
+			break
+		}
+		commonPathLength++
+	}
+
+	hopDistance := uint8(len(a) + len(b) - 2*commonPathLength)
+
+	return hopDistance
+}
+
+// computeFee computes the fee to forward an HTLC of `amt` milli-satoshis over
+// the passed active payment channel. This value is currently computed as
+// specified in BOLT07, but will likely change in the near future.
+func computeFee(amt lnwire.MilliSatoshi,
+	edge *channeldb.ChannelEdgePolicy) lnwire.MilliSatoshi {
+
+	return edge.FeeBaseMSat + (amt*edge.FeeProportionalMillionths)/1000000
+}
+
+func checkAmtValid(amtToSend lnwire.MilliSatoshi,
+	info *channeldb.ChannelEdgeInfo, edge *channeldb.ChannelEdgePolicy) error {
+	// If the estimated bandwidth of the channel edge is not able
+	// to carry the amount that needs to be send, return error.
+	if lnwire.NewMSatFromSatoshis(info.Capacity) < amtToSend {
+		return errors.New("Error, channel capacity less than the amount to send")
+	}
+	log.Infof("Channel capacity, Min HTLC, Amount to forward %d %d %d", lnwire.NewMSatFromSatoshis(info.Capacity), edge.MinHTLC, amtToSend)
+	// If the amountToSend is less than the minimum required
+	// amount, return error.￼￼￼
+	if amtToSend < edge.MinHTLC {
+		return errors.New("Error, amt to send less than Edge MinHTLC")
+	}
+
+	return nil
+}
+
+func (s *speedyMurmursGossip) ProbeDynamicInfo(dest []uint32, payment *routing.LightningPayment) error {
+
+	log.Infof("ProbeDynamicInfo for destination address %v", dest)
+	// TODO (shiva): Check if the payment is already added in the table
+	r := s.rand.Uint32()
+	// TODO (shiva): Add locks here
+	s.dynamicInfoTable[r] = payment
+	nextNode, err := s.getNextNodeInRoute(dest)
+	if err != nil {
+		return err
+	}
+
+	// Check if any channel to the 'nextNode' has sufficient balance
+	// to make the payment
+	err = s.isSufficientCapacity(payment.Amount, nextNode)
+	if err != nil {
+		log.Infof("Error ProbeDynamicInfo %v", err)
+	}
+	// Converting the destination uint slice to byte slice for sending
+	// it to the next node in route
+	b, err := s.intToByteArray(dest[:], 0)
+	if err != nil {
+		log.Infof("Error while converting 'ProbeDynamicInfo' %v", err)
+	}
+	mess := lnwire.NewDynamicInfoProbeMess(s.nodeID, r, payment.Amount.ToSatoshis(), 0, 0, b, 0, 1)
+	nodePubKeyHash := pubKeyHash(nextNode.PubKeyBytes)
+	log.Infof("Sending dynamic probe to %d", nodePubKeyHash)
+	err = s.sendToPeer(nodePubKeyHash, mess)
+	if err != nil {
+		log.Infof("Failed to send message to peer %v", err)
+		return err
+	}
+	return nil
+}
+
+// Checks if there exists a channel to the 'nextNode' with atleast the
+// capacity of 'amt'
+func (s *speedyMurmursGossip) isSufficientCapacity(amt lnwire.MilliSatoshi, nextNode *channeldb.LightningNode) error {
+	selfNode, err := s.fetchLightningNode(routing.NewVertex(s.spannTree.selfPubKey))
+	if err != nil {
+		return err
+	}
+
+	var chanFound = false
+
+	err = selfNode.ForEachChannel(nil, func(_ *bbolt.Tx, chanInfo *channeldb.ChannelEdgeInfo,
+		outEdge, _ *channeldb.ChannelEdgePolicy) error {
+
+		// If there is no edge policy for this candidate
+		// node, skip.
+		if outEdge == nil {
+			log.Info("No outEdge found while channel iteration")
+			return nil
+		}
+
+		// Checking if the channel belongs to the 'nextNode' in question
+		if !reflect.DeepEqual(nextNode.PubKeyBytes, chanInfo.NodeKey2Bytes) {
+			log.Info("Next node not matching")
+		} else {
+			log.Info("Next node matched")
+		}
+		log.Infof("%v", selfNode.PubKeyBytes)
+		log.Infof("%v", nextNode.PubKeyBytes)
+		log.Infof("%v", chanInfo.NodeKey1Bytes)
+		log.Infof("%v", chanInfo.NodeKey2Bytes)
+		// nodeFee := computeFee(payment.Amount, inEdge)
+		// amtToSend := payment.Amount + nodeFee
+		err := checkAmtValid(amt, chanInfo, outEdge)
+		if err != nil {
+			log.Infof("Error %v", err)
+		} else {
+			chanFound = true
+		}
+		return nil
+	})
+
+	if chanFound == false {
+		return errors.New("No channel found with sufficient balance")
+	}
+	return nil
+
+}
+
+// Note: This MUST be run as a goroutine
+// This goroutine handles upstream and downstream probe info query
+// TODO (shiva): Handle all the errors and propogate it to the source
+func (s *speedyMurmursGossip) processDynProbeInfo() {
+	for {
+		select {
+		case m := <-s.dynInfoProbeChan:
+			// Upstream message
+			if m.IsUpstream == 1 {
+				if _, ok := s.dynamicInfoFrwdTable[m.ProbeID]; ok {
+					log.Infof("Error duplicate probe message sent")
+					continue
+				}
+
+				dest, err := s.byteToIntArray(m.Destination[:])
+				if err != nil {
+					log.Infof("Error while decoding dest address probe message %v", err)
+					continue
+				}
+
+				s.prefixMutex.RLock()
+				// Check if the current node itself the destination
+				retval := reflect.DeepEqual(s.currentPrefixEmbedding[s.nodeID][:], dest[:])
+				s.prefixMutex.RUnlock()
+				if retval {
+					log.Infof("Dynamic probe message reached destination, reverting back to sender")
+					// Initiate downstream message
+					m.IsUpstream = 0
+					// m.NodeID is the sender who sent this message
+					s.sendToPeer(m.NodeID, &m)
+					continue
+				}
+
+				// Storing the sender information and probeID, useful during downstream
+				// message processing
+				s.dynamicInfoFrwdTable[m.ProbeID] = m.NodeID
+
+				nextNode, err := s.getNextNodeInRoute(dest)
+				if err != nil {
+					log.Infof("Error while getting information about next node in route %v", err)
+					continue
+				}
+				// Check if any channel to the 'nextNode' has sufficient balance
+				// to make the payment
+				err = s.isSufficientCapacity(lnwire.NewMSatFromSatoshis(m.Amount), nextNode)
+				if err != nil {
+					log.Infof("Error ProbeDynamicInfo %v", err)
+				}
+				// Updating the nodeID with the one who will be sending this
+				// upstream message.
+				m.NodeID = s.nodeID
+				s.sendToPeer(pubKeyHash(nextNode.PubKeyBytes), &m)
+
+			} else if m.IsUpstream == 0 { // Downstream message
+
+				// Check if this probe was initiated by current node
+				_, ok := s.dynamicInfoTable[m.ProbeID]
+				if ok {
+					// Update the fee information
+					s.updateFee(&m)
+					log.Infof("Dynamic probe successfully reached sender, aggregated fee %d", m.FeeAggregator)
+					// TODO (shiva): Add Write locks here
+					delete(s.dynamicInfoTable, m.ProbeID)
+					continue
+				}
+
+				nodeID, ok := s.dynamicInfoFrwdTable[m.ProbeID]
+				if !ok {
+					log.Infof("Error ProbeID for the query not present in table")
+					continue
+				}
+				// Update the fee information in the message
+				s.updateFee(&m)
+				// Just forward the message downstream without modifying anything
+				s.sendToPeer(nodeID, &m)
+				// Remove the ID from the table
+				delete(s.dynamicInfoFrwdTable, m.ProbeID)
+
+			} else {
+				log.Infof("Error IsUpstream value unkown")
+			}
+		}
+	}
+}
+
+func (s *speedyMurmursGossip) updateFee(m *lnwire.DynamicInfoProbeMess) error {
+
+	// Check if the next node in the path is the destination
+	// If yes, then do not aggregate the fees as no fee is charged for final hop
+	dest, err := s.byteToIntArray(m.Destination[:])
+	if err != nil {
+		return err
+	}
+	nextNode, err := s.getNextNodeInRoute(dest)
+	if err != nil {
+		return err
+	}
+	s.prefixMutex.RLock()
+	nextNodePrefix, ok := s.currentPrefixEmbedding[pubKeyHash(nextNode.PubKeyBytes)]
+	s.prefixMutex.RUnlock()
+
+	// Truncating the last coordinate due to the way coordinates are stored
+	// Refer 'currentPrefixEmbedding'
+	if len(nextNodePrefix) > 0 {
+		nextNodePrefix = nextNodePrefix[:len(nextNodePrefix)-1]
+	}
+	if !ok {
+		log.Infof("Error, next node embedding not found")
+	}
+	log.Infof("Dest: %v", dest)
+	log.Infof("Next: %v", nextNodePrefix)
+	if reflect.DeepEqual(dest, nextNodePrefix) {
+		log.Infof("Update fee, destination node")
+		return nil
+	}
+
+	log.Infof("Update fee, aggregating fee")
+	// TODO (shiva): Aggregate the fees and CLTV values
+	m.FeeAggregator = m.FeeAggregator + 1
+	return nil
+}
+
+func pubKeyHash(pubKeyBytes [33]byte) uint32 {
+	tempByteHash := sha256.Sum256(pubKeyBytes[:])
+	return binary.BigEndian.Uint32(tempByteHash[:])
 }

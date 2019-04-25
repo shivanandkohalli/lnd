@@ -175,3 +175,64 @@ func TestByteToIntArray(t *testing.T) {
 		t.Fatal("Error in decoding to int array")
 	}
 }
+
+func TestCalcHopDistance(t *testing.T) {
+	a := []uint32{1, 2, 1}
+	b := []uint32{1, 3, 1}
+
+	retval := calcHopDistance(a, b)
+	if retval != 4 {
+		t.Fatalf("Incorrect hop distance calculated")
+	}
+
+	a = []uint32{1, 2, 1}
+	b = []uint32{3, 1}
+
+	retval = calcHopDistance(a, b)
+	if retval != 5 {
+		t.Fatalf("Incorrect hop distance calculated")
+	}
+
+	a = []uint32{}
+	b = []uint32{5, 23423, 1234, 111, 42342, 111234, 34}
+
+	retval = calcHopDistance(a, b)
+	if retval != 7 {
+		t.Fatalf("Incorrect hop distance calculated")
+	}
+
+	a = make([]uint32, 20)
+	b = make([]uint32, 20)
+
+	for i := 0; i < 20; i++ {
+		a[i] = uint32(i)
+		b[i] = uint32(i)
+	}
+
+	retval = calcHopDistance(a, b)
+	if retval != 0 {
+		t.Fatalf("Incorrect hop distance calculated")
+	}
+
+	for i := 0; i < 20; i++ {
+		a[i] = uint32(i)
+		b[i] = uint32(i + 1)
+	}
+
+	retval = calcHopDistance(a, b)
+	if retval != 40 {
+		t.Fatalf("Incorrect hop distance calculated")
+	}
+
+	a[0] = 1
+	b[0] = 1
+
+	a[1] = 2
+	b[1] = 2
+
+	retval = calcHopDistance(a, b)
+	if retval != 36 {
+		t.Fatalf("Incorrect hop distance calculated")
+	}
+
+}

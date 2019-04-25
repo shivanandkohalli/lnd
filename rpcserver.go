@@ -2653,7 +2653,7 @@ type paymentIntentResponse struct {
 // unable to save the payment. The second error returned denotes if the payment
 // didn't succeed.
 func (r *rpcServer) dispatchPaymentIntent(
-	payIntent *rpcPaymentIntent) (*paymentIntentResponse, error) {
+	payIntent *rpcPaymentIntent, destEmbedding []uint32) (*paymentIntentResponse, error) {
 
 	// Construct a payment request to send to the channel router. If the
 	// payment is successful, the route chosen will be returned. Otherwise,
@@ -2680,7 +2680,10 @@ func (r *rpcServer) dispatchPaymentIntent(
 		if payIntent.cltvDelta != 0 {
 			payment.FinalCLTVDelta = &payIntent.cltvDelta
 		}
-
+		err := r.server.authGossiper.SmGossip.ProbeDynamicInfo(destEmbedding, payment)
+		if err != nil {
+			rpcsLog.Infof("Errror while probing dynamic info %v", err)
+		}
 		preImage, route, routerErr = r.server.chanRouter.SendPayment(
 			payment,
 		)
@@ -2841,8 +2844,9 @@ func (r *rpcServer) sendPayment(stream *paymentStream) error {
 					htlcSema <- struct{}{}
 				}()
 
+				// TODO (shiva): Send the destination embedding here
 				resp, saveErr := r.dispatchPaymentIntent(
-					payIntent,
+					payIntent, nil,
 				)
 
 				switch {
@@ -2889,6 +2893,7 @@ func (r *rpcServer) sendPayment(stream *paymentStream) error {
 func (r *rpcServer) SendPaymentSync(ctx context.Context,
 	nextPayment *lnrpc.SendRequest) (*lnrpc.SendResponse, error) {
 
+	rpcsLog.Infof("Printing the received test destination %v", nextPayment.TestDestination)
 	return r.sendPaymentSync(ctx, &rpcPaymentRequest{
 		SendRequest: nextPayment,
 	})
@@ -2946,7 +2951,7 @@ func (r *rpcServer) sendPaymentSync(ctx context.Context,
 
 	// With the payment validated, we'll now attempt to dispatch the
 	// payment.
-	resp, saveErr := r.dispatchPaymentIntent(&payIntent)
+	resp, saveErr := r.dispatchPaymentIntent(&payIntent, nextPayment.TestDestination)
 	switch {
 	case saveErr != nil:
 		return nil, saveErr
@@ -3270,10 +3275,13 @@ func (r *rpcServer) AddInvoice(ctx context.Context,
 		return nil, err
 	}
 
+	// Fetch the local address which will be the destination for the sender
+	destAddress := r.server.authGossiper.GetLocalAddress()
 	return &lnrpc.AddInvoiceResponse{
-		RHash:          rHash[:],
-		PaymentRequest: payReqString,
-		AddIndex:       addIndex,
+		RHash:              rHash[:],
+		PaymentRequest:     payReqString,
+		AddIndex:           addIndex,
+		DestinationAddress: destAddress,
 	}, nil
 }
 
