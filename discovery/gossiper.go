@@ -216,10 +216,12 @@ type AuthenticatedGossiper struct {
 	// start its related operations.
 	spannTreeID *spanningTreeIdentity
 
-	// smGossip handles the relavant gossip of the Speedy Murmurs routing
+	// SmGossip handles the relavant gossip of the Speedy Murmurs routing
 	// algorithm.
-	smGossip *speedyMurmursGossip
+	SmGossip *speedyMurmursGossip
 
+	// Used to restrict access to 'peerPubkeysMap' in a thread safe way
+	peerPubkeyMutex sync.RWMutex
 	// creates a map of node ID's to that of pubkey. Used while converting
 	// node ID to pubkey to send messages
 	peerPubkeysMap map[uint32]*btcec.PublicKey
@@ -437,10 +439,10 @@ func (d *AuthenticatedGossiper) Start() error {
 	go d.networkHandler()
 
 	// TODO (shiva): Move this initialization to New()
-	smGossip := newSpeedyMurmurGossip(d.spannTreeID.nodeSpanTree.nodeID, d.spannTreeID, d.cfg.Broadcast, d.sendToPeerByHash)
-	d.smGossip = smGossip
+	smGossip := newSpeedyMurmurGossip(d.spannTreeID.nodeSpanTree.nodeID, d.spannTreeID, d.cfg.Broadcast, d.sendToPeerByHash, d.cfg.Router.FetchLightningNode)
+	d.SmGossip = smGossip
 	go d.spannTreeID.buildSpanningTree()
-	go d.smGossip.startGossip()
+	go d.SmGossip.startGossip()
 	return nil
 }
 
@@ -543,8 +545,19 @@ func (d *AuthenticatedGossiper) ProcessRemoteAnnouncement(msg lnwire.Message,
 	case *lnwire.PrefixEmbedding:
 		log.Infof("Received Prefix embeddings with node ID %d", m.NodeID)
 		select {
-		case d.smGossip.smGossipChan <- *m:
+		case d.SmGossip.smGossipChan <- *m:
 		}
+		errChan <- nil
+		return errChan
+	case *lnwire.DynamicInfoProbeMess:
+		log.Info("Received DynamicInfoProbeMess")
+		select {
+		case d.SmGossip.dynInfoProbeChan <- *m:
+		}
+		errChan <- nil
+		return errChan
+	case *lnwire.TestMessage:
+		log.Info("Received Test Message")
 		errChan <- nil
 		return errChan
 	}
@@ -567,7 +580,6 @@ func (d *AuthenticatedGossiper) ProcessRemoteAnnouncement(msg lnwire.Message,
 	case <-d.quit:
 		nMsg.err <- ErrGossiperShuttingDown
 	}
-
 	return nMsg.err
 }
 
@@ -2643,12 +2655,14 @@ func (d *AuthenticatedGossiper) updateChannel(info *channeldb.ChannelEdgeInfo,
 // AddNewPeer Updates information about the new peer which has joined in the
 // spanning tree related data structures.
 func (d *AuthenticatedGossiper) AddNewPeer(peer lnpeer.Peer) {
-	//TODO (shiva): Add data locks
+	d.peerPubkeyMutex.Lock()
+	defer d.peerPubkeyMutex.Unlock()
+
 	log.Info("Adding new peer to spanning tree")
 	peerPubKey := peer.PubKey()
 	peerPubKeyHash := d.spannTreeID.sha256ByteArray(peerPubKey[:])
 	d.spannTreeID.connectedNodeState[peerPubKeyHash] = "D"
-	d.spannTreeID.connectedNodePubkey[peerPubKeyHash] = routing.NewVertex(peer.IdentityKey())
+	d.spannTreeID.connectedNodePubkey[peerPubKeyHash] = peer.IdentityKey()
 	// Send a Spanning tree hello message to the newly connected peer
 	m := &lnwire.SpanningTreeHello{
 		NodeID:     d.spannTreeID.nodeSpanTree.nodeID,
@@ -2660,13 +2674,15 @@ func (d *AuthenticatedGossiper) AddNewPeer(peer lnpeer.Peer) {
 	// TODO (shiva): Store this map of public keys to node ID's in a single place
 	// Adding the peer also to the map, which will be useful while sending individual
 	// messages to the peeers
+
 	d.peerPubkeysMap[peerPubKeyHash] = peer.IdentityKey()
-	b, err := d.smGossip.registerPeer(peerPubKeyHash)
+
+	b, err := d.SmGossip.registerPeer(peerPubKeyHash)
 	if err != nil {
 		log.Infof("Unable to register peer in Speedy murmur gossip %v", err)
 		return
 	}
-	s := lnwire.NewPrefixEmbedding(d.smGossip.nodeID, b)
+	s := lnwire.NewPrefixEmbedding(d.SmGossip.nodeID, b)
 	d.cfg.SendToPeer(peer.IdentityKey(), s)
 
 }
@@ -2674,11 +2690,18 @@ func (d *AuthenticatedGossiper) AddNewPeer(peer lnpeer.Peer) {
 // A Wrapper function to send message to a peer where the peer is identified
 // by the sha256 hash of its public key
 func (d *AuthenticatedGossiper) sendToPeerByHash(pubKeyHash uint32, msg lnwire.Message) error {
+	d.peerPubkeyMutex.RLock()
 	identityKey, ok := d.peerPubkeysMap[pubKeyHash]
+	d.peerPubkeyMutex.RUnlock()
 	if !ok {
 		return errors.New("Peer not added in hash->pubkey map")
 	}
-
 	err := d.cfg.SendToPeer(identityKey, msg)
 	return err
+}
+
+// GetLocalAddress returns the current coordinate of this node
+// TODO(shiva): This function should be in speedyMurmurs.go
+func (d *AuthenticatedGossiper) GetLocalAddress() []uint32 {
+	return d.SmGossip.getPrefixEmbedding()
 }

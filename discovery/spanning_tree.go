@@ -3,6 +3,7 @@ package discovery
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec"
@@ -38,7 +39,7 @@ type spanningTreeIdentity struct {
 	// To store the Hello message having the best path to the root node
 	bestMessage spanningTreeHello
 	// Store a map of hash of pubkey with that of pubkey,
-	connectedNodePubkey map[uint32]routing.Vertex
+	connectedNodePubkey map[uint32]*btcec.PublicKey
 	// Interval at which the hello messages received must be processed.
 	processHelloDelay time.Duration
 	// Broadcast broadcasts a particular set of announcements to all peers
@@ -54,6 +55,8 @@ type spanningTreeIdentity struct {
 	processRecEmbChan chan bool
 	// Store the node ID of the node connected to the root port
 	rootPortNode uint32
+	// Self node pubkey
+	selfPubKey *btcec.PublicKey
 }
 
 func newSpanTreeIdentity(selfKey *btcec.PublicKey, broadCast func(skips map[routing.Vertex]struct{},
@@ -73,11 +76,12 @@ func newSpanTreeIdentity(selfKey *btcec.PublicKey, broadCast func(skips map[rout
 			costToRoot: 0},          // As the nodes think they are the root, cost to itself is 0
 		spanTreeChan:        make(chan spanningTreeHello),
 		connectedNodeState:  make(map[uint32]string),
-		connectedNodePubkey: make(map[uint32]routing.Vertex),
+		connectedNodePubkey: make(map[uint32]*btcec.PublicKey),
 		latestNodeHello:     make(map[uint32]spanningTreeHello),
 		processHelloDelay:   time.Second * cfgProcessHelloDelay,
 		broadcast:           broadCast,
 		rootPortNode:        selfKeyHash,
+		selfPubKey:          selfKey,
 	}
 }
 
@@ -357,7 +361,7 @@ func (s *spanningTreeIdentity) sendBestPathToConnectedNodes() error {
 		if v != "D" {
 			t, ok := s.connectedNodePubkey[k]
 			if ok {
-				skip[t] = struct{}{}
+				skip[routing.NewVertex(t)] = struct{}{}
 			} else {
 				log.Info("Unable to find the pubkey before broadcasting")
 			}
@@ -383,4 +387,15 @@ func (s *spanningTreeIdentity) printSpanningTreeIdentities() {
 // getRootPortID sends the ID of the node connected to the root port
 func (s *spanningTreeIdentity) getRootPortID() uint32 {
 	return s.rootPortNode
+}
+
+// getPubKeyFromHash, fetches the corresponding pubkey reference for the
+// hash of its serialized version
+func (s *spanningTreeIdentity) getPubKeyFromHash(hash uint32) (*btcec.PublicKey, error) {
+	node, ok := s.connectedNodePubkey[hash]
+	if !ok {
+		log.Infof("List of pubkeys stored %v", s.connectedNodePubkey)
+		return nil, errors.New("Pubkey corresponding to hash not found")
+	}
+	return node, nil
 }
