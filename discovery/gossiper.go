@@ -254,7 +254,7 @@ func New(cfg Config, selfKey *btcec.PublicKey) (*AuthenticatedGossiper, error) {
 	}
 
 	spannTreeID := newSpanTreeIdentity(selfKey, cfg.Broadcast)
-	return &AuthenticatedGossiper{
+	gossiper := &AuthenticatedGossiper{
 		selfKey:                 selfKey,
 		cfg:                     &cfg,
 		networkMsgs:             make(chan *networkMsg),
@@ -268,7 +268,10 @@ func New(cfg Config, selfKey *btcec.PublicKey) (*AuthenticatedGossiper, error) {
 		peerSyncers:             make(map[routing.Vertex]*gossipSyncer),
 		spannTreeID:             spannTreeID,
 		peerPubkeysMap:          make(map[uint32]*btcec.PublicKey),
-	}, nil
+	}
+
+	gossiper.SmGossip = newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, cfg.Broadcast, gossiper.sendToPeerByHash, cfg.Router.FetchLightningNode)
+	return gossiper, nil
 }
 
 // SynchronizeNode sends a message to the service indicating it should
@@ -439,8 +442,8 @@ func (d *AuthenticatedGossiper) Start() error {
 	go d.networkHandler()
 
 	// TODO (shiva): Move this initialization to New()
-	smGossip := newSpeedyMurmurGossip(d.spannTreeID.nodeSpanTree.nodeID, d.spannTreeID, d.cfg.Broadcast, d.sendToPeerByHash, d.cfg.Router.FetchLightningNode)
-	d.SmGossip = smGossip
+	// smGossip := newSpeedyMurmurGossip(d.spannTreeID.nodeSpanTree.nodeID, d.spannTreeID, d.cfg.Broadcast, d.sendToPeerByHash, d.cfg.Router.FetchLightningNode)
+	// d.SmGossip = smGossip
 	go d.spannTreeID.buildSpanningTree()
 	go d.SmGossip.startGossip()
 	return nil

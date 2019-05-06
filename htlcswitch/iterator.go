@@ -5,7 +5,7 @@ import (
 	"io"
 
 	"github.com/btcsuite/btcd/btcec"
-	"github.com/lightningnetwork/lightning-onion"
+	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/lnwire"
 )
 
@@ -38,9 +38,9 @@ func (c NetworkHop) String() string {
 }
 
 var (
-	// exitHop is a special "hop" which denotes that an incoming HTLC is
+	// ExitHop is a special "hop" which denotes that an incoming HTLC is
 	// meant to pay finally to the receiving node.
-	exitHop lnwire.ShortChannelID
+	ExitHop lnwire.ShortChannelID
 
 	// sourceHop is a sentinel value denoting that an incoming HTLC is
 	// initiated by our own switch.
@@ -145,7 +145,7 @@ func (r *sphinxHopIterator) ForwardingInstructions() ForwardingInfo {
 	var nextHop lnwire.ShortChannelID
 	switch r.processedPacket.Action {
 	case sphinx.ExitNode:
-		nextHop = exitHop
+		nextHop = ExitHop
 	case sphinx.MoreHops:
 		s := binary.BigEndian.Uint64(fwdInst.NextAddress[:])
 		nextHop = lnwire.NewShortChanIDFromInt(s)

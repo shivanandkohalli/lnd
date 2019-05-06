@@ -2,14 +2,15 @@ package lnwire
 
 import "io"
 
-const embeddingSize = 80
+//const embeddingSize = 80
 
+// PrefixEmbedding ...
 type PrefixEmbedding struct {
 	NodeID    uint32
-	Embedding [embeddingSize]byte
+	Embedding [EmbeddingSize]byte
 }
 
-// NewPrefixEmbedding
+// NewPrefixEmbedding ...
 func NewPrefixEmbedding(nodeID uint32, emb []byte) *PrefixEmbedding {
 	var temp PrefixEmbedding
 	temp.NodeID = nodeID

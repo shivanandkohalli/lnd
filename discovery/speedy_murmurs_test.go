@@ -19,14 +19,14 @@ func mockSendToPeer(pubKeyHash uint32, msg lnwire.Message) error {
 }
 func TestStartGossip(t *testing.T) {
 	spannTreeID := newSpanTreeIdentity(nodeKeyPub1, mockBroadcast)
-	s := newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, mockBroadcast, mockSendToPeer)
+	s := newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, mockBroadcast, mockSendToPeer, nil)
 
 	s.spannTree.rootPortNode = 1
 	go s.startGossip()
 	s.registerPeer(1)
 	a := make([]uint32, 1)
 	a[0] = 500
-	b, _ := s.intToByteArray(a, 5000)
+	b, _ := s.IntToByteArray(a, 5000)
 	mess := lnwire.NewPrefixEmbedding(1, b)
 
 	select {
@@ -46,7 +46,7 @@ func TestStartGossip(t *testing.T) {
 }
 func TestCopyInt(t *testing.T) {
 	spannTreeID := newSpanTreeIdentity(nodeKeyPub1, nil)
-	smGossip := newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, nil, nil)
+	smGossip := newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, nil, nil, nil)
 
 	a := make([]uint32, 3)
 	a[0] = 1
@@ -66,7 +66,7 @@ func TestCopyInt(t *testing.T) {
 }
 func TestInitEmbedding(t *testing.T) {
 	spannTreeID := newSpanTreeIdentity(nodeKeyPub1, nil)
-	smGossip := newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, nil, nil)
+	smGossip := newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, nil, nil, nil)
 
 	smGossip.initEmbedding()
 	e := smGossip.getPrefixEmbedding()
@@ -77,7 +77,7 @@ func TestInitEmbedding(t *testing.T) {
 }
 func TestRegisterPeer(t *testing.T) {
 	spannTreeID := newSpanTreeIdentity(nodeKeyPub1, nil)
-	smGossip := newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, nil, nil)
+	smGossip := newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, nil, nil, nil)
 	b, err := smGossip.registerPeer(5)
 	if err != nil {
 		t.Fatalf("Error in registering %v", err)
@@ -85,7 +85,7 @@ func TestRegisterPeer(t *testing.T) {
 		t.Logf("%v", b)
 	}
 
-	r, _ := smGossip.byteToIntArray(b)
+	r, _ := smGossip.ByteToIntArray(b)
 	if len(r) != 1 {
 		t.Fatalf("%v", r)
 	}
@@ -97,38 +97,38 @@ func TestRegisterPeer(t *testing.T) {
 }
 
 func TestIntToByteArray(t *testing.T) {
-	spannTreeID := newSpanTreeIdentity(nodeKeyPub1, nil)
-	smGossip := newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, nil, nil)
 
+	spannTreeID := newSpanTreeIdentity(nodeKeyPub1, nil)
+	smGossip := newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, nil, nil, nil)
 	testInt := make([]uint32, 2)
 	testInt[0] = 1234
 	testInt[1] = 9812
 
-	b, err := smGossip.intToByteArray(testInt, 7897779)
+	b, err := smGossip.IntToByteArray(testInt, 7897779)
 	if err != nil {
 		t.Fatalf("Error returned %v", err)
 	}
 
-	r, err := smGossip.byteToIntArray(b)
+	r, err := smGossip.ByteToIntArray(b)
 
 	if r[0] != 1234 || r[1] != 9812 || r[2] != 7897779 {
 		t.Fatalf("Failed to encode and decode %v", r[0])
 	}
 
 	testInt = make([]uint32, 21)
-	_, err = smGossip.intToByteArray(testInt, 0)
+	_, err = smGossip.IntToByteArray(testInt, 0)
 	if err == nil {
 		t.Fatal("Failed to detect size overflow error")
 	}
 
-	_, err = smGossip.intToByteArray(testInt[0:20], 4564)
+	_, err = smGossip.IntToByteArray(testInt[0:20], 4564)
 	if err == nil {
 		t.Fatal("Failed to detect size overflow error")
 	}
 
 	var a []uint32
-	x, _ := smGossip.intToByteArray(a, 500)
-	y, _ := smGossip.byteToIntArray(x)
+	x, _ := smGossip.IntToByteArray(a, 500)
+	y, _ := smGossip.ByteToIntArray(x)
 
 	if y[0] != 500 {
 		t.Fatalf("Error when first parameter is nil %v", y)
@@ -136,10 +136,11 @@ func TestIntToByteArray(t *testing.T) {
 
 }
 func TestByteToIntArray(t *testing.T) {
+
 	spannTreeID := newSpanTreeIdentity(nodeKeyPub1, nil)
-	smGossip := newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, nil, nil)
+	smGossip := newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, nil, nil, nil)
 	var test [80]byte
-	_, error := smGossip.byteToIntArray(test[:50])
+	_, error := smGossip.ByteToIntArray(test[:50])
 	if error == nil {
 		t.Fatal("Unable to detect size mismatch")
 	}
@@ -161,7 +162,7 @@ func TestByteToIntArray(t *testing.T) {
 	for i := 0; i < len(temp); i++ {
 		test[i+4] = temp[i]
 	}
-	x, err := smGossip.byteToIntArray(test[:])
+	x, err := smGossip.ByteToIntArray(test[:])
 
 	if err != nil {
 		t.Fatal("Error returned")

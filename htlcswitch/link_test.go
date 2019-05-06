@@ -4122,7 +4122,7 @@ func generateHtlc(t *testing.T, coreLink *channelLink,
 	hops := []ForwardingInfo{
 		{
 			Network:         BitcoinHop,
-			NextHop:         exitHop,
+			NextHop:         ExitHop,
 			AmountToForward: htlcAmt,
 			OutgoingCTLV:    144,
 		},

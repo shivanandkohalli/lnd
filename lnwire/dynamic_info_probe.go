@@ -2,11 +2,11 @@ package lnwire
 
 import (
 	"io"
-
-	"github.com/btcsuite/btcutil"
 )
 
-const embeddingSize = 80
+// EmbeddingSize this will be the absolute size of the path embeddings in byte
+// TODO: Make it dynamic and not absolute
+const EmbeddingSize = 80
 
 // DynamicInfoProbeMess aims to collect the fees and cltv values along the route
 // to the destination
@@ -17,16 +17,16 @@ type DynamicInfoProbeMess struct {
 	NodeID uint32
 	// ProbeId Unique ID for every dynamic probe created
 	ProbeID        uint32
-	Amount         btcutil.Amount
+	Amount         MilliSatoshi
 	FeeAggregator  uint32
 	CLTVAggregator uint32
-	Destination    [embeddingSize]byte
+	Destination    [EmbeddingSize]byte
 	ErrorFlag      uint8
 	IsUpstream     uint8
 }
 
 // NewDynamicInfoProbeMess creates new instance of the probe message
-func NewDynamicInfoProbeMess(nodeID uint32, probeID uint32, amt btcutil.Amount, feeAggregator uint32,
+func NewDynamicInfoProbeMess(nodeID uint32, probeID uint32, amt MilliSatoshi, feeAggregator uint32,
 	cltvAggregator uint32, dest []byte, errorFlag uint8, isUpstream uint8) *DynamicInfoProbeMess {
 	mess := DynamicInfoProbeMess{
 		NodeID:         nodeID,

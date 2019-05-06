@@ -16,7 +16,7 @@ import (
 	"github.com/coreos/bbolt"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/go-errors/errors"
-	"github.com/lightningnetwork/lightning-onion"
+	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/lnwallet"
@@ -326,6 +326,11 @@ type ChannelRouter struct {
 	// consistency between the various database accesses.
 	channelEdgeMtx *multimutex.Mutex
 
+	// Fetches the forwarding intstructions for the next hop according to
+	// speedyMurmurs algo
+	// TODO(shiva): This method must be inside Config and not here!!
+	GetNextHop func(dest []byte, amount lnwire.MilliSatoshi) (htlcswitch.ForwardingInfo,
+		error)
 	rejectMtx   sync.RWMutex
 	rejectCache map[uint64]struct{}
 
@@ -1619,7 +1624,7 @@ type LightningPayment struct {
 // will be returned which describes the path the successful payment traversed
 // within the network to reach the destination. Additionally, the payment
 // preimage will also be returned.
-func (r *ChannelRouter) SendPayment(payment *LightningPayment) ([32]byte, *Route, error) {
+func (r *ChannelRouter) SendPayment(payment *LightningPayment, dest []byte) ([32]byte, *Route, error) {
 	// Before starting the HTLC routing attempt, we'll create a fresh
 	// payment session which will report our errors back to mission
 	// control.
@@ -1630,7 +1635,7 @@ func (r *ChannelRouter) SendPayment(payment *LightningPayment) ([32]byte, *Route
 		return [32]byte{}, nil, err
 	}
 
-	return r.sendPayment(payment, paySession)
+	return r.sendPayment(payment, paySession, dest)
 }
 
 // SendToRoute attempts to send a payment as described within the passed
@@ -1646,8 +1651,9 @@ func (r *ChannelRouter) SendToRoute(routes []*Route,
 	paySession := r.missionControl.NewPaymentSessionFromRoutes(
 		routes,
 	)
-
-	return r.sendPayment(payment, paySession)
+	// Note (shiva): Passing nil as the third arguement, as this method will
+	// not be used during speedyMurmurs routing
+	return r.sendPayment(payment, paySession, nil)
 }
 
 // sendPayment attempts to send a payment as described within the passed
@@ -1658,7 +1664,7 @@ func (r *ChannelRouter) SendToRoute(routes []*Route,
 // within the network to reach the destination. Additionally, the payment
 // preimage will also be returned.
 func (r *ChannelRouter) sendPayment(payment *LightningPayment,
-	paySession *paymentSession) ([32]byte, *Route, error) {
+	paySession *paymentSession, destEmbedding []byte) ([32]byte, *Route, error) {
 
 	log.Tracef("Dispatching route for lightning payment: %v",
 		newLogClosure(func() string {
@@ -1728,7 +1734,9 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 			// Fall through if we haven't hit our time limit, or
 			// are expiring.
 		}
-
+		// TODO(shiva): Here call the speedy murmur api for the next path
+		// and remove the reference to paySession. The one in the error can
+		// be kept.
 		route, err := paySession.RequestRoute(
 			payment, uint32(currentHeight), finalCLTVDelta,
 		)
@@ -1759,7 +1767,6 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 		if err != nil {
 			return preImage, nil, err
 		}
-
 		// Craft an HTLC packet to send to the layer 2 switch. The
 		// metadata within this packet will be used to route the
 		// payment through the network, starting with the first-hop.
@@ -1769,6 +1776,12 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 			PaymentHash: payment.PaymentHash,
 		}
 		copy(htlcAdd.OnionBlob[:], onionBlob)
+		copy(htlcAdd.DestEmbedding[:], destEmbedding)
+
+		fwdInfo, err := r.GetNextHop(destEmbedding, route.TotalAmount)
+		if err != nil {
+			log.Infof("GetNextHop %v", err)
+		}
 
 		// Attempt to send this payment through the network to complete
 		// the payment. If this attempt fails, then we'll continue on
@@ -1779,6 +1792,12 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 		preImage, sendError = r.cfg.SendToSwitch(
 			firstHop, htlcAdd, circuit,
 		)
+
+		log.Infof("GetNextHop %v", fwdInfo)
+		log.Infof("Source routing first hop %v Timelock%d ", firstHop, route.TotalTimeLock)
+		// preImage, sendError = r.cfg.SendToSwitch(
+		// 	fwdInfo.NextHop, htlcAdd, circuit,
+		// )
 		if sendError != nil {
 			// An error occurred when attempting to send the
 			// payment, depending on the error type, we'll either

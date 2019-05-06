@@ -237,6 +237,11 @@ type ChannelLinkConfig struct {
 	// fee rate. A random timeout will be selected between these values.
 	MinFeeUpdateTimeout time.Duration
 	MaxFeeUpdateTimeout time.Duration
+
+	// Fetches the forwarding intstructions for the next hop according to
+	// speedyMurmurs algo
+	GetNextHop func(dest []byte, amount lnwire.MilliSatoshi) (ForwardingInfo,
+		error)
 }
 
 // channelLink is the service which drives a channel's commitment update
@@ -1556,7 +1561,6 @@ func (l *channelLink) handleUpstreamMsg(msg lnwire.Message) {
 
 		l.processRemoteSettleFails(fwdPkg, settleFails)
 		needUpdate := l.processRemoteAdds(fwdPkg, adds)
-
 		// If the link failed during processing the adds, we must
 		// return to ensure we won't attempted to update the state
 		// further.
@@ -2164,7 +2168,6 @@ func (l *channelLink) processRemoteSettleFails(fwdPkg *channeldb.FwdPkg,
 // have already been acknowledged in the forwarding package will be ignored.
 func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
 	lockedInHtlcs []*lnwallet.PaymentDescriptor) bool {
-
 	l.tracef("processing %d remote adds for height %d",
 		len(lockedInHtlcs), fwdPkg.Height)
 
@@ -2209,6 +2212,14 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
 	)
 
 	for i, pd := range lockedInHtlcs {
+
+		fwdInfo, err := l.cfg.GetNextHop(pd.DestEmbedding[:], pd.Amount)
+		if err != nil {
+			log.Infof("GetNextHop %v", err)
+		}
+		fwdInfo.OutgoingCTLV = pd.Timeout - fwdInfo.OutgoingCTLV
+		log.Infof("GetNextHop %v", fwdInfo)
+
 		idx := uint16(i)
 
 		if fwdPkg.State == channeldb.FwdStateProcessed &&
@@ -2270,9 +2281,10 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
 
 		heightNow := l.cfg.Switch.BestHeight()
 
-		fwdInfo := chanIterator.ForwardingInstructions()
+		// fwdInfo := chanIterator.ForwardingInstructions()
+		// log.Infof("Link fwdInfo %v", fwdInfo)
 		switch fwdInfo.NextHop {
-		case exitHop:
+		case ExitHop:
 			// If hodl.ExitSettle is requested, we will not validate
 			// the final hop's ADD, nor will we settle the
 			// corresponding invoice or respond with the preimage.
@@ -2499,9 +2511,10 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
 				// Otherwise, it was already processed, we can
 				// can collect it and continue.
 				addMsg := &lnwire.UpdateAddHTLC{
-					Expiry:      fwdInfo.OutgoingCTLV,
-					Amount:      fwdInfo.AmountToForward,
-					PaymentHash: pd.RHash,
+					Expiry:        fwdInfo.OutgoingCTLV,
+					Amount:        fwdInfo.AmountToForward,
+					PaymentHash:   pd.RHash,
+					DestEmbedding: pd.DestEmbedding,
 				}
 
 				// Finally, we'll encode the onion packet for
@@ -2540,9 +2553,10 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
 			// create the outgoing HTLC using the parameters as
 			// specified in the forwarding info.
 			addMsg := &lnwire.UpdateAddHTLC{
-				Expiry:      fwdInfo.OutgoingCTLV,
-				Amount:      fwdInfo.AmountToForward,
-				PaymentHash: pd.RHash,
+				Expiry:        fwdInfo.OutgoingCTLV,
+				Amount:        fwdInfo.AmountToForward,
+				PaymentHash:   pd.RHash,
+				DestEmbedding: pd.DestEmbedding,
 			}
 
 			// Finally, we'll encode the onion packet for the

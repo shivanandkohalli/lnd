@@ -582,6 +582,7 @@ func (p *peer) addLink(chanPoint *wire.OutPoint,
 		UnsafeReplay:        cfg.UnsafeReplay,
 		MinFeeUpdateTimeout: htlcswitch.DefaultMinLinkFeeUpdateTimeout,
 		MaxFeeUpdateTimeout: htlcswitch.DefaultMaxLinkFeeUpdateTimeout,
+		GetNextHop:          p.server.authGossiper.SmGossip.GetNextHop,
 	}
 
 	link := htlcswitch.NewChannelLink(linkCfg, lnChan)

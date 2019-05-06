@@ -50,6 +50,10 @@ type UpdateAddHTLC struct {
 	// should strip off a layer of encryption, exposing the next hop to be
 	// used in the subsequent UpdateAddHTLC message.
 	OnionBlob [OnionPacketSize]byte
+
+	// This is the embeddings/coordinates according to the SpeedyMurmurs algo
+	// for the destination node in the path
+	DestEmbedding [EmbeddingSize]byte
 }
 
 // NewUpdateAddHTLC returns a new empty UpdateAddHTLC message.
@@ -73,6 +77,7 @@ func (c *UpdateAddHTLC) Decode(r io.Reader, pver uint32) error {
 		c.PaymentHash[:],
 		&c.Expiry,
 		c.OnionBlob[:],
+		c.DestEmbedding[:],
 	)
 }
 
@@ -88,6 +93,7 @@ func (c *UpdateAddHTLC) Encode(w io.Writer, pver uint32) error {
 		c.PaymentHash[:],
 		c.Expiry,
 		c.OnionBlob[:],
+		c.DestEmbedding[:],
 	)
 }
 
@@ -104,6 +110,6 @@ func (c *UpdateAddHTLC) MsgType() MessageType {
 //
 // This is part of the lnwire.Message interface.
 func (c *UpdateAddHTLC) MaxPayloadLength(uint32) uint32 {
-	// 1450
-	return 32 + 8 + 4 + 8 + 32 + 1366
+	// 1450 + 80
+	return 32 + 8 + 4 + 8 + 32 + 1366 + 80
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/coreos/bbolt"
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing"
 )
@@ -139,7 +140,7 @@ func (s *speedyMurmursGossip) registerPeer(nodeID uint32) ([]byte, error) {
 		return nil, errors.New("Embedding buffer full")
 	}
 
-	retvalEmb, err := s.intToByteArray(currEmb[:], s.randomNodeCoordinate[nodeID])
+	retvalEmb, err := s.IntToByteArray(currEmb[:], s.randomNodeCoordinate[nodeID])
 
 	return retvalEmb, err
 }
@@ -182,7 +183,7 @@ func (s *speedyMurmursGossip) startGossip() {
 						log.Info("Not sending to myself")
 						continue
 					}
-					t, err := s.intToByteArray(s.currentPrefixEmbedding[s.nodeID], r)
+					t, err := s.IntToByteArray(s.currentPrefixEmbedding[s.nodeID], r)
 					if err != nil {
 						log.Infof("Error in converting int to byte array %v", err)
 					}
@@ -201,7 +202,7 @@ func (s *speedyMurmursGossip) startGossip() {
 			}
 		// Update the map with the latest gossip received
 		case m := <-s.smGossipChan:
-			t, err := s.byteToIntArray(m.Embedding[:])
+			t, err := s.ByteToIntArray(m.Embedding[:])
 			if err != nil {
 				log.Infof("Error in decoding received embedding, Error: %v", err)
 				continue
@@ -225,7 +226,9 @@ func (s *speedyMurmursGossip) startGossip() {
 
 }
 
-func (s *speedyMurmursGossip) byteToIntArray(b []byte) ([]uint32, error) {
+// ByteToIntArray converts a byte array of size 'embeddingByteSize'
+// to an intger array until it finds the first zero in the array
+func (s *speedyMurmursGossip) ByteToIntArray(b []byte) ([]uint32, error) {
 	if len(b) != embeddingByteSize {
 		return nil, errors.New("Size of received byte array isn't equal to desired size")
 	}
@@ -244,10 +247,10 @@ func (s *speedyMurmursGossip) byteToIntArray(b []byte) ([]uint32, error) {
 	return intArray[:], nil
 }
 
-// Converts an uint32 slice to a byte slice.
+// IntToByteArray Converts an uint32 slice to a byte slice.
 // if appendInt is not 0, it gets appended to the byte slice else neglected
 // Returns byte slize of size 'embeddingByteSize'
-func (s *speedyMurmursGossip) intToByteArray(a []uint32, appendInt uint32) ([]byte, error) {
+func (s *speedyMurmursGossip) IntToByteArray(a []uint32, appendInt uint32) ([]byte, error) {
 
 	if appendInt == 0 && len(a) > embeddingByteSize/4 {
 		return nil, errors.New("Size overflow")
@@ -328,6 +331,30 @@ func (s *speedyMurmursGossip) intToByteArray(a []uint32, appendInt uint32) ([]by
 // 	return nextHop, nil
 // }
 
+func (s *speedyMurmursGossip) GetNextHop(dest []byte, amount lnwire.MilliSatoshi) (htlcswitch.ForwardingInfo, error) {
+
+	destEmbedding, err := s.ByteToIntArray(dest)
+	if err != nil {
+		return htlcswitch.ForwardingInfo{}, err
+	}
+	node, err := s.getNextNodeInRoute(destEmbedding)
+	if err != nil {
+		return htlcswitch.ForwardingInfo{}, err
+	}
+
+	if node == nil {
+		log.Infof("Destination forwarding info")
+		return htlcswitch.ForwardingInfo{NextHop: htlcswitch.ExitHop, AmountToForward: amount}, nil
+	}
+
+	fwdInfo, err := s.isSufficientCapacity(amount, node)
+	return fwdInfo, err
+}
+
+// Find the next node in the path to the destination
+// returns LightningNode, nil if it finds
+// returns nil, nil if this is the destination node
+// returns nil, err if there is any error
 func (s *speedyMurmursGossip) getNextNodeInRoute(dest []uint32) (*channeldb.LightningNode, error) {
 	s.prefixMutex.RLock()
 	defer s.prefixMutex.RUnlock()
@@ -335,6 +362,11 @@ func (s *speedyMurmursGossip) getNextNodeInRoute(dest []uint32) (*channeldb.Ligh
 	var minDist uint8
 	minDist = math.MaxUint8
 	var nextNode *channeldb.LightningNode
+
+	// Checking if the destination is this node itself
+	if reflect.DeepEqual(dest, s.getPrefixEmbedding()) {
+		return nextNode, nil
+	}
 
 	for nodeID, emb := range s.currentPrefixEmbedding {
 
@@ -432,19 +464,32 @@ func (s *speedyMurmursGossip) ProbeDynamicInfo(dest []uint32, payment *routing.L
 		return err
 	}
 
+	if nextNode == nil {
+		return errors.New("This is the destination node")
+	}
+
 	// Check if any channel to the 'nextNode' has sufficient balance
 	// to make the payment
-	err = s.isSufficientCapacity(payment.Amount, nextNode)
+	_, err = s.isSufficientCapacity(payment.Amount, nextNode)
 	if err != nil {
 		log.Infof("Error ProbeDynamicInfo %v", err)
 	}
 	// Converting the destination uint slice to byte slice for sending
 	// it to the next node in route
-	b, err := s.intToByteArray(dest[:], 0)
+	b, err := s.IntToByteArray(dest[:], 0)
 	if err != nil {
 		log.Infof("Error while converting 'ProbeDynamicInfo' %v", err)
 	}
-	mess := lnwire.NewDynamicInfoProbeMess(s.nodeID, r, payment.Amount.ToSatoshis(), 0, 0, b, 0, 1)
+	mess := lnwire.NewDynamicInfoProbeMess(s.nodeID, r, payment.Amount, 0, 0, b, 0, 1)
+
+	// Adding the CLTV delta for the destination node, as the sender has
+	// received this information from the invoice. The other CLTV deltas
+	// will be aggregated during the
+	if payment.FinalCLTVDelta == nil {
+		mess.CLTVAggregator = routing.DefaultFinalCLTVDelta
+	} else {
+		mess.CLTVAggregator = uint32(*payment.FinalCLTVDelta)
+	}
 	nodePubKeyHash := pubKeyHash(nextNode.PubKeyBytes)
 	log.Infof("Sending dynamic probe to %d", nodePubKeyHash)
 	err = s.sendToPeer(nodePubKeyHash, mess)
@@ -457,13 +502,14 @@ func (s *speedyMurmursGossip) ProbeDynamicInfo(dest []uint32, payment *routing.L
 
 // Checks if there exists a channel to the 'nextNode' with atleast the
 // capacity of 'amt'
-func (s *speedyMurmursGossip) isSufficientCapacity(amt lnwire.MilliSatoshi, nextNode *channeldb.LightningNode) error {
-	selfNode, err := s.fetchLightningNode(routing.NewVertex(s.spannTree.selfPubKey))
-	if err != nil {
-		return err
-	}
+func (s *speedyMurmursGossip) isSufficientCapacity(amt lnwire.MilliSatoshi, nextNode *channeldb.LightningNode) (htlcswitch.ForwardingInfo, error) {
 
 	var chanFound = false
+	var fwdInfo htlcswitch.ForwardingInfo
+	selfNode, err := s.fetchLightningNode(routing.NewVertex(s.spannTree.selfPubKey))
+	if err != nil {
+		return fwdInfo, err
+	}
 
 	err = selfNode.ForEachChannel(nil, func(_ *bbolt.Tx, chanInfo *channeldb.ChannelEdgeInfo,
 		outEdge, _ *channeldb.ChannelEdgePolicy) error {
@@ -481,10 +527,10 @@ func (s *speedyMurmursGossip) isSufficientCapacity(amt lnwire.MilliSatoshi, next
 		} else {
 			log.Info("Next node matched")
 		}
-		log.Infof("%v", selfNode.PubKeyBytes)
-		log.Infof("%v", nextNode.PubKeyBytes)
-		log.Infof("%v", chanInfo.NodeKey1Bytes)
-		log.Infof("%v", chanInfo.NodeKey2Bytes)
+		// log.Infof("%v", selfNode.PubKeyBytes)
+		// log.Infof("%v", nextNode.PubKeyBytes)
+		// log.Infof("%v", chanInfo.NodeKey1Bytes)
+		// log.Infof("%v", chanInfo.NodeKey2Bytes)
 		// nodeFee := computeFee(payment.Amount, inEdge)
 		// amtToSend := payment.Amount + nodeFee
 		err := checkAmtValid(amt, chanInfo, outEdge)
@@ -492,14 +538,17 @@ func (s *speedyMurmursGossip) isSufficientCapacity(amt lnwire.MilliSatoshi, next
 			log.Infof("Error %v", err)
 		} else {
 			chanFound = true
+			fwdInfo.NextHop = lnwire.NewShortChanIDFromInt(chanInfo.ChannelID)
+			fwdInfo.AmountToForward = amt - computeFee(amt, outEdge)
+			fwdInfo.OutgoingCTLV = uint32(outEdge.TimeLockDelta)
 		}
 		return nil
 	})
 
 	if chanFound == false {
-		return errors.New("No channel found with sufficient balance")
+		return fwdInfo, errors.New("No channel found with sufficient balance")
 	}
-	return nil
+	return fwdInfo, nil
 
 }
 
@@ -517,7 +566,7 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 					continue
 				}
 
-				dest, err := s.byteToIntArray(m.Destination[:])
+				dest, err := s.ByteToIntArray(m.Destination[:])
 				if err != nil {
 					log.Infof("Error while decoding dest address probe message %v", err)
 					continue
@@ -547,7 +596,7 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 				}
 				// Check if any channel to the 'nextNode' has sufficient balance
 				// to make the payment
-				err = s.isSufficientCapacity(lnwire.NewMSatFromSatoshis(m.Amount), nextNode)
+				_, err = s.isSufficientCapacity(m.Amount, nextNode)
 				if err != nil {
 					log.Infof("Error ProbeDynamicInfo %v", err)
 				}
@@ -562,8 +611,11 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 				_, ok := s.dynamicInfoTable[m.ProbeID]
 				if ok {
 					// Update the fee information
-					s.updateFee(&m)
-					log.Infof("Dynamic probe successfully reached sender, aggregated fee %d", m.FeeAggregator)
+					err := s.updateFee(&m)
+					if err != nil {
+						log.Infof("Error in updating fee %v", err)
+					}
+					log.Infof("Dynamic probe successfully reached sender, aggregated fee %d, CLTV aggregatd %d", m.Amount, m.CLTVAggregator)
 					// TODO (shiva): Add Write locks here
 					delete(s.dynamicInfoTable, m.ProbeID)
 					continue
@@ -575,7 +627,10 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 					continue
 				}
 				// Update the fee information in the message
-				s.updateFee(&m)
+				err := s.updateFee(&m)
+				if err != nil {
+					log.Infof("Error in updating fee %v", err)
+				}
 				// Just forward the message downstream without modifying anything
 				s.sendToPeer(nodeID, &m)
 				// Remove the ID from the table
@@ -588,11 +643,13 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 	}
 }
 
+// Calculates the fees and timelock value for the next node in the path
+// and updates the received 'DynamicInfoProbeMess' with appropriate values
 func (s *speedyMurmursGossip) updateFee(m *lnwire.DynamicInfoProbeMess) error {
 
 	// Check if the next node in the path is the destination
 	// If yes, then do not aggregate the fees as no fee is charged for final hop
-	dest, err := s.byteToIntArray(m.Destination[:])
+	dest, err := s.ByteToIntArray(m.Destination[:])
 	if err != nil {
 		return err
 	}
@@ -604,13 +661,13 @@ func (s *speedyMurmursGossip) updateFee(m *lnwire.DynamicInfoProbeMess) error {
 	nextNodePrefix, ok := s.currentPrefixEmbedding[pubKeyHash(nextNode.PubKeyBytes)]
 	s.prefixMutex.RUnlock()
 
+	if !ok {
+		log.Infof("Error, next node embedding not found")
+	}
 	// Truncating the last coordinate due to the way coordinates are stored
 	// Refer 'currentPrefixEmbedding'
 	if len(nextNodePrefix) > 0 {
 		nextNodePrefix = nextNodePrefix[:len(nextNodePrefix)-1]
-	}
-	if !ok {
-		log.Infof("Error, next node embedding not found")
 	}
 	log.Infof("Dest: %v", dest)
 	log.Infof("Next: %v", nextNodePrefix)
@@ -620,8 +677,50 @@ func (s *speedyMurmursGossip) updateFee(m *lnwire.DynamicInfoProbeMess) error {
 	}
 
 	log.Infof("Update fee, aggregating fee")
-	// TODO (shiva): Aggregate the fees and CLTV values
-	m.FeeAggregator = m.FeeAggregator + 1
+
+	selfNode, err := s.fetchLightningNode(routing.NewVertex(s.spannTree.selfPubKey))
+	if err != nil {
+		return err
+	}
+
+	var chanFound = false
+
+	err = selfNode.ForEachChannel(nil, func(_ *bbolt.Tx, chanInfo *channeldb.ChannelEdgeInfo,
+		outEdge, chanPolicy *channeldb.ChannelEdgePolicy) error {
+
+		// If there is no edge policy for this candidate
+		// node, skip.
+		if outEdge == nil {
+			log.Info("No outEdge found while channel iteration")
+			return nil
+		}
+
+		// Checking if the channel belongs to the 'nextNode' in question
+		if !reflect.DeepEqual(nextNode.PubKeyBytes, chanInfo.NodeKey1Bytes) &&
+			!reflect.DeepEqual(nextNode.PubKeyBytes, chanInfo.NodeKey2Bytes) {
+			log.Info("Next node not matching")
+			return nil
+		}
+		log.Info("Next node matched")
+
+		// log.Infof("%v", selfNode.PubKeyBytes)
+		// log.Infof("%v", nextNode.PubKeyBytes)
+		// log.Infof("%v", chanInfo.NodeKey1Bytes)
+		// log.Infof("%v", chanInfo.NodeKey2Bytes)
+
+		// TODO (shiva): Check if there is enough funds in the channel
+		// nodeFee := computeFee(payment.Amount, inEdge)
+		// amtToSend := payment.Amount + nodeFee
+
+		m.Amount = m.Amount + computeFee(m.Amount, chanPolicy)
+		m.CLTVAggregator = m.CLTVAggregator + uint32(chanPolicy.TimeLockDelta)
+		chanFound = true
+		return nil
+	})
+
+	if chanFound == false {
+		return errors.New("No channel found with sufficient balance")
+	}
 	return nil
 }
 

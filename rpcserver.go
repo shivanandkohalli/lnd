@@ -2682,10 +2682,15 @@ func (r *rpcServer) dispatchPaymentIntent(
 		}
 		err := r.server.authGossiper.SmGossip.ProbeDynamicInfo(destEmbedding, payment)
 		if err != nil {
-			rpcsLog.Infof("Errror while probing dynamic info %v", err)
+			rpcsLog.Infof("Error while probing dynamic info %v", err)
+		}
+
+		b, err := r.server.authGossiper.SmGossip.IntToByteArray(destEmbedding, 0)
+		if err != nil {
+			rpcsLog.Infof("Error transforming int to byte array %v", err)
 		}
 		preImage, route, routerErr = r.server.chanRouter.SendPayment(
-			payment,
+			payment, b,
 		)
 	} else {
 		payment := &routing.LightningPayment{
