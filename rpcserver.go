@@ -2680,9 +2680,12 @@ func (r *rpcServer) dispatchPaymentIntent(
 		if payIntent.cltvDelta != 0 {
 			payment.FinalCLTVDelta = &payIntent.cltvDelta
 		}
-		err := r.server.authGossiper.SmGossip.ProbeDynamicInfo(destEmbedding, payment)
+		probe, err := r.server.authGossiper.SmGossip.ProbeDynamicInfo(destEmbedding, payment)
 		if err != nil {
 			rpcsLog.Infof("Error while probing dynamic info %v", err)
+			return &paymentIntentResponse{
+				Err: err,
+			}, nil
 		}
 
 		b, err := r.server.authGossiper.SmGossip.IntToByteArray(destEmbedding, 0)
@@ -2690,7 +2693,7 @@ func (r *rpcServer) dispatchPaymentIntent(
 			rpcsLog.Infof("Error transforming int to byte array %v", err)
 		}
 		preImage, route, routerErr = r.server.chanRouter.SendPayment(
-			payment, b,
+			payment, b, probe,
 		)
 	} else {
 		payment := &routing.LightningPayment{

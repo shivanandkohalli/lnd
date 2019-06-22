@@ -340,6 +340,7 @@ func newRoute(amtToSend, feeLimit lnwire.MilliSatoshi, sourceVertex Vertex,
 		return nil, newErrf(ErrFeeLimitExceeded, err)
 	}
 
+	log.Infof("Pathfind.go total amt calculated is %d cltv is %d", newRoute.TotalAmount, newRoute.TotalTimeLock-currentHeight)
 	return newRoute, nil
 }
 

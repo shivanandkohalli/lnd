@@ -6,7 +6,7 @@ import (
 	"io"
 
 	"github.com/btcsuite/btcd/btcec"
-	"github.com/lightningnetwork/lightning-onion"
+	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/lnwire"
 )
 
@@ -61,6 +61,9 @@ const (
 
 	// EncrypterTypeMock is used to identify a mock obfuscator instance.
 	EncrypterTypeMock = 2
+
+	// EncrypterTypeClear ...
+	EncrypterTypeClear = 3
 )
 
 // UnknownEncrypterType is an error message used to signal that an unexpected
@@ -110,6 +113,70 @@ type ErrorEncrypter interface {
 	// NOTE: This should be called shortly after Decode to properly
 	// reinitialize the error encrypter.
 	Reextract(ErrorEncrypterExtracter) error
+}
+
+// ClearErrorEncrypter ...
+type ClearErrorEncrypter struct {
+}
+
+// NewClearErrorEncrypter ...
+func NewClearErrorEncrypter() *ClearErrorEncrypter {
+	return &ClearErrorEncrypter{}
+}
+
+// EncryptFirstHop ...
+func (c *ClearErrorEncrypter) EncryptFirstHop(failure lnwire.FailureMessage) (lnwire.OpaqueReason, error) {
+	var b bytes.Buffer
+	if err := lnwire.EncodeFailure(&b, failure, 0); err != nil {
+		return nil, err
+	}
+	return b.Bytes(), nil
+}
+
+// IntermediateEncrypt ...
+func (c *ClearErrorEncrypter) IntermediateEncrypt(reason lnwire.OpaqueReason) lnwire.OpaqueReason {
+	return reason
+}
+
+// Type ...
+// Type returns the identifier for a sphinx error encrypter.
+func (c *ClearErrorEncrypter) Type() EncrypterType {
+	return EncrypterTypeClear
+}
+
+// Encode ...
+func (c *ClearErrorEncrypter) Encode(w io.Writer) error {
+	return nil
+}
+
+// Decode ...
+func (c *ClearErrorEncrypter) Decode(r io.Reader) error {
+	return nil
+}
+
+// Reextract ...
+func (c *ClearErrorEncrypter) Reextract(
+	extract ErrorEncrypterExtracter) error {
+	return nil
+}
+
+// ClearErrorDecrypter ...
+type ClearErrorDecrypter struct {
+}
+
+// DecryptError ...
+// NOTE: Part of the ErrorDecrypter interface.
+func (c *ClearErrorDecrypter) DecryptError(reason lnwire.OpaqueReason) (*ForwardingError, error) {
+	r := bytes.NewReader(reason)
+	failureMsg, err := lnwire.DecodeFailure(r, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ForwardingError{
+		ErrorSource:    nil,
+		FailureMessage: failureMsg,
+	}, nil
 }
 
 // SphinxErrorEncrypter is a concrete implementation of both the ErrorEncrypter

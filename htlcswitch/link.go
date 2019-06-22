@@ -1947,7 +1947,9 @@ func (l *channelLink) HtlcSatifiesPolicy(payHash [32]byte,
 		l.errorf("htlc(%x) has an expiry that's too soon: "+
 			"outgoing_expiry=%v, best_height=%v", payHash[:],
 			incomingTimeout-timeDelta, heightNow)
-
+		log.Infof("htlc(%x) has an expiry that's too soon: "+
+			"outgoing_expiry=%v, best_height=%v", payHash[:],
+			incomingTimeout-timeDelta, heightNow)
 		var failure lnwire.FailureMessage
 		update, err := l.cfg.FetchLastChannelUpdate(
 			l.ShortChanID(),
@@ -2170,42 +2172,42 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
 	lockedInHtlcs []*lnwallet.PaymentDescriptor) bool {
 	l.tracef("processing %d remote adds for height %d",
 		len(lockedInHtlcs), fwdPkg.Height)
+	//**********************************************************************************
+	// decodeReqs := make([]DecodeHopIteratorRequest, 0, len(lockedInHtlcs))
+	// for _, pd := range lockedInHtlcs {
+	// 	switch pd.EntryType {
 
-	decodeReqs := make([]DecodeHopIteratorRequest, 0, len(lockedInHtlcs))
-	for _, pd := range lockedInHtlcs {
-		switch pd.EntryType {
+	// 	// TODO(conner): remove type switch?
+	// 	case lnwallet.Add:
+	// 		// Before adding the new htlc to the state machine,
+	// 		// parse the onion object in order to obtain the
+	// 		// routing information with DecodeHopIterator function
+	// 		// which process the Sphinx packet.
+	// 		onionReader := bytes.NewReader(pd.OnionBlob)
 
-		// TODO(conner): remove type switch?
-		case lnwallet.Add:
-			// Before adding the new htlc to the state machine,
-			// parse the onion object in order to obtain the
-			// routing information with DecodeHopIterator function
-			// which process the Sphinx packet.
-			onionReader := bytes.NewReader(pd.OnionBlob)
+	// 		req := DecodeHopIteratorRequest{
+	// 			OnionReader:  onionReader,
+	// 			RHash:        pd.RHash[:],
+	// 			IncomingCltv: pd.Timeout,
+	// 		}
 
-			req := DecodeHopIteratorRequest{
-				OnionReader:  onionReader,
-				RHash:        pd.RHash[:],
-				IncomingCltv: pd.Timeout,
-			}
-
-			decodeReqs = append(decodeReqs, req)
-		}
-	}
+	// 		decodeReqs = append(decodeReqs, req)
+	// 	}
+	// }
 
 	// Atomically decode the incoming htlcs, simultaneously checking for
 	// replay attempts. A particular index in the returned, spare list of
 	// channel iterators should only be used if the failure code at the
 	// same index is lnwire.FailCodeNone.
-	decodeResps, sphinxErr := l.cfg.DecodeHopIterators(
-		fwdPkg.ID(), decodeReqs,
-	)
-	if sphinxErr != nil {
-		l.fail(LinkFailureError{code: ErrInternalError},
-			"unable to decode hop iterators: %v", sphinxErr)
-		return false
-	}
-
+	// decodeResps, sphinxErr := l.cfg.DecodeHopIterators(
+	// 	fwdPkg.ID(), decodeReqs,
+	// )
+	// if sphinxErr != nil {
+	// 	l.fail(LinkFailureError{code: ErrInternalError},
+	// 		"unable to decode hop iterators: %v", sphinxErr)
+	// 	return false
+	// }
+	//**********************************************************************************
 	var (
 		needUpdate    bool
 		switchPackets []*htlcPacket
@@ -2243,44 +2245,44 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
 		// payment descriptor.
 		var onionBlob [lnwire.OnionPacketSize]byte
 		copy(onionBlob[:], pd.OnionBlob)
-
+		//**********************************************************************************
 		// Before adding the new htlc to the state machine, parse the
 		// onion object in order to obtain the routing information with
 		// DecodeHopIterator function which process the Sphinx packet.
-		chanIterator, failureCode := decodeResps[i].Result()
-		if failureCode != lnwire.CodeNone {
-			// If we're unable to process the onion blob than we
-			// should send the malformed htlc error to payment
-			// sender.
-			l.sendMalformedHTLCError(pd.HtlcIndex, failureCode,
-				onionBlob[:], pd.SourceRef)
-			needUpdate = true
+		// chanIterator, failureCode := decodeResps[i].Result()
+		// if failureCode != lnwire.CodeNone {
+		// 	// If we're unable to process the onion blob than we
+		// 	// should send the malformed htlc error to payment
+		// 	// sender.
+		// 	l.sendMalformedHTLCError(pd.HtlcIndex, failureCode,
+		// 		onionBlob[:], pd.SourceRef)
+		// 	needUpdate = true
 
-			log.Errorf("unable to decode onion hop "+
-				"iterator: %v", failureCode)
-			continue
-		}
+		// 	log.Errorf("unable to decode onion hop "+
+		// 		"iterator: %v", failureCode)
+		// 	continue
+		// }
 
-		// Retrieve onion obfuscator from onion blob in order to
-		// produce initial obfuscation of the onion failureCode.
-		obfuscator, failureCode := chanIterator.ExtractErrorEncrypter(
-			l.cfg.ExtractErrorEncrypter,
-		)
-		if failureCode != lnwire.CodeNone {
-			// If we're unable to process the onion blob than we
-			// should send the malformed htlc error to payment
-			// sender.
-			l.sendMalformedHTLCError(pd.HtlcIndex, failureCode,
-				onionBlob[:], pd.SourceRef)
-			needUpdate = true
+		// // Retrieve onion obfuscator from onion blob in order to
+		// // produce initial obfuscation of the onion failureCode.
+		// obfuscator, failureCode := chanIterator.ExtractErrorEncrypter(
+		// 	l.cfg.ExtractErrorEncrypter,
+		// )
+		// if failureCode != lnwire.CodeNone {
+		// 	// If we're unable to process the onion blob than we
+		// 	// should send the malformed htlc error to payment
+		// 	// sender.
+		// 	l.sendMalformedHTLCError(pd.HtlcIndex, failureCode,
+		// 		onionBlob[:], pd.SourceRef)
+		// 	needUpdate = true
 
-			log.Errorf("unable to decode onion "+
-				"obfuscator: %v", failureCode)
-			continue
-		}
-
+		// 	log.Errorf("unable to decode onion "+
+		// 		"obfuscator: %v", failureCode)
+		// 	continue
+		// }
+		//**********************************************************************************
 		heightNow := l.cfg.Switch.BestHeight()
-
+		obfuscator := NewClearErrorEncrypter()
 		// fwdInfo := chanIterator.ForwardingInstructions()
 		// log.Infof("Link fwdInfo %v", fwdInfo)
 		switch fwdInfo.NextHop {
@@ -2517,15 +2519,15 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
 					DestEmbedding: pd.DestEmbedding,
 				}
 
-				// Finally, we'll encode the onion packet for
-				// the _next_ hop using the hop iterator
-				// decoded for the current hop.
-				buf := bytes.NewBuffer(addMsg.OnionBlob[0:0])
+				// // Finally, we'll encode the onion packet for
+				// // the _next_ hop using the hop iterator
+				// // decoded for the current hop.
+				// buf := bytes.NewBuffer(addMsg.OnionBlob[0:0])
 
-				// We know this cannot fail, as this ADD
-				// was marked forwarded in a previous
-				// round of processing.
-				chanIterator.EncodeNextHop(buf)
+				// // We know this cannot fail, as this ADD
+				// // was marked forwarded in a previous
+				// // round of processing.
+				// chanIterator.EncodeNextHop(buf)
 
 				updatePacket := &htlcPacket{
 					incomingChanID:  l.ShortChanID(),
@@ -2562,8 +2564,8 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
 			// Finally, we'll encode the onion packet for the
 			// _next_ hop using the hop iterator decoded for the
 			// current hop.
-			buf := bytes.NewBuffer(addMsg.OnionBlob[0:0])
-			err := chanIterator.EncodeNextHop(buf)
+			// buf := bytes.NewBuffer(addMsg.OnionBlob[0:0])
+			// err := chanIterator.EncodeNextHop(buf)
 			if err != nil {
 				log.Errorf("unable to encode the "+
 					"remaining route %v", err)

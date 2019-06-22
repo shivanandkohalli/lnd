@@ -21,7 +21,7 @@ type DynamicInfoProbeMess struct {
 	FeeAggregator  uint32
 	CLTVAggregator uint32
 	Destination    [EmbeddingSize]byte
-	ErrorFlag      uint8
+	ErrorFlag      byte
 	IsUpstream     uint8
 }
 

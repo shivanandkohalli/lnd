@@ -518,10 +518,10 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB, cc *chainControl,
 			// Using the created circuit, initialize the error
 			// decrypter so we can parse+decode any failures
 			// incurred by this payment within the switch.
-			errorDecryptor := &htlcswitch.SphinxErrorDecrypter{
-				OnionErrorDecrypter: sphinx.NewOnionErrorDecrypter(circuit),
-			}
-
+			// errorDecryptor := &htlcswitch.SphinxErrorDecrypter{
+			// 	OnionErrorDecrypter: sphinx.NewOnionErrorDecrypter(circuit),
+			// }
+			errorDecryptor := &htlcswitch.ClearErrorDecrypter{}
 			return s.htlcSwitch.SendHTLC(
 				firstHop, htlcAdd, errorDecryptor,
 			)

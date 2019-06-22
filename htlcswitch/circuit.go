@@ -202,6 +202,8 @@ func (c *PaymentCircuit) Decode(r io.Reader) error {
 	case EncrypterTypeMock:
 		// Test encrypter.
 		c.ErrorEncrypter = NewMockObfuscator()
+	case EncrypterTypeClear:
+		c.ErrorEncrypter = NewClearErrorEncrypter()
 
 	default:
 		return UnknownEncrypterType(encrypterType)

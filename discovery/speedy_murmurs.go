@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
-	"math"
 	"math/rand"
 	"reflect"
 	"sync"
@@ -64,7 +63,8 @@ type speedyMurmursGossip struct {
 	randomNodeCoordinate map[uint32]uint32
 
 	// Stores a unique ID and a LightningPayment description until the dynamic
-	// information is probed along the route
+	// information is probed along the route.
+	// This is only stored by the Initiator node
 	dynamicInfoTable map[uint32]*routing.LightningPayment
 
 	// Stores ID -> NodeID
@@ -75,9 +75,64 @@ type speedyMurmursGossip struct {
 
 	// Channel to receive the dynamic info probe queries
 	dynInfoProbeChan chan lnwire.DynamicInfoProbeMess
-	rand             *rand.Rand
+
+	// Channel to send the collected result from the dynamic info probe
+	dynInfoResultChan chan lnwire.DynamicInfoProbeMess
+	rand              *rand.Rand
 
 	quit chan struct{}
+}
+
+type errorType byte
+
+const (
+
+	// no error
+	errorNone errorType = 0
+	// One of the nodes in the path is unable to fetch the node announcemnt
+	// of the next node in the path
+	errorNoNextNode = 1
+
+	// A probe with the same ID already is exists, try resending the probe
+	// with a different ID
+	errorDuplicateProbe = 2
+
+	// unable to decode the destination coordinates/embedding
+	errorDestDecoding = 3
+
+	// no sufficient capacity in the path
+	errorNoSufficientCapacity = 4
+
+	// TODO (shiva): Create more specific errors
+	errorProbeDynamicInfo = 5
+
+	// Error in updating the fees
+	errorFeeUpdate = 6
+)
+
+func (c errorType) string() string {
+	switch c {
+	case errorNone:
+		return "errorNone"
+	case errorNoNextNode:
+		return "errorNoNextNode"
+	case errorDuplicateProbe:
+		return "errorDuplicateProbe"
+
+	case errorDestDecoding:
+		return "errorDestDecoding"
+
+	case errorNoSufficientCapacity:
+		return "errorNoSufficientCapacity"
+
+	case errorProbeDynamicInfo:
+		return "errorProbeDynamicInfo"
+
+	case errorFeeUpdate:
+		return "errorFeeUpdate"
+	default:
+		return "errorUnkown"
+	}
 }
 
 func (s *speedyMurmursGossip) stop() {
@@ -105,6 +160,7 @@ func newSpeedyMurmurGossip(nodeID uint32, spannTree *spanningTreeIdentity, broad
 		dynamicInfoTable:       make(map[uint32]*routing.LightningPayment),
 		dynamicInfoFrwdTable:   make(map[uint32]uint32),
 		dynInfoProbeChan:       make(chan lnwire.DynamicInfoProbeMess),
+		dynInfoResultChan:      make(chan lnwire.DynamicInfoProbeMess),
 		quit:                   make(chan struct{}),
 	}
 }
@@ -360,7 +416,9 @@ func (s *speedyMurmursGossip) getNextNodeInRoute(dest []uint32) (*channeldb.Ligh
 	defer s.prefixMutex.RUnlock()
 
 	var minDist uint8
-	minDist = math.MaxUint8
+	// Assign the distance from this node to destination to the minDist as
+	// the next node in the path Must have a lesser distance than this value
+	minDist = calcHopDistance(dest, s.getPrefixEmbedding())
 	var nextNode *channeldb.LightningNode
 
 	// Checking if the destination is this node itself
@@ -452,7 +510,7 @@ func checkAmtValid(amtToSend lnwire.MilliSatoshi,
 	return nil
 }
 
-func (s *speedyMurmursGossip) ProbeDynamicInfo(dest []uint32, payment *routing.LightningPayment) error {
+func (s *speedyMurmursGossip) ProbeDynamicInfo(dest []uint32, payment *routing.LightningPayment) (lnwire.DynamicInfoProbeMess, error) {
 
 	log.Infof("ProbeDynamicInfo for destination address %v", dest)
 	// TODO (shiva): Check if the payment is already added in the table
@@ -461,11 +519,11 @@ func (s *speedyMurmursGossip) ProbeDynamicInfo(dest []uint32, payment *routing.L
 	s.dynamicInfoTable[r] = payment
 	nextNode, err := s.getNextNodeInRoute(dest)
 	if err != nil {
-		return err
+		return lnwire.DynamicInfoProbeMess{}, err
 	}
 
 	if nextNode == nil {
-		return errors.New("This is the destination node")
+		return lnwire.DynamicInfoProbeMess{}, errors.New("This is the destination node")
 	}
 
 	// Check if any channel to the 'nextNode' has sufficient balance
@@ -491,13 +549,51 @@ func (s *speedyMurmursGossip) ProbeDynamicInfo(dest []uint32, payment *routing.L
 		mess.CLTVAggregator = uint32(*payment.FinalCLTVDelta)
 	}
 	nodePubKeyHash := pubKeyHash(nextNode.PubKeyBytes)
+
+	// Check if the next node itself the destination for the payment,
+	// then we need not send the probe
+	s.prefixMutex.RLock()
+	nextNodePrefix, ok := s.currentPrefixEmbedding[nodePubKeyHash]
+	s.prefixMutex.RUnlock()
+
+	if !ok {
+		log.Infof("Error, next node embedding not found")
+		return *mess, errors.New("next node embedding not found")
+	}
+	// Truncating the last coordinate due to the way coordinates are stored
+	// Refer 'currentPrefixEmbedding'
+	if len(nextNodePrefix) > 0 {
+		nextNodePrefix = nextNodePrefix[:len(nextNodePrefix)-1]
+	}
+
+	n, _ := s.IntToByteArray(nextNodePrefix[:], 0)
+	if reflect.DeepEqual(b, n) {
+		log.Infof("No need to send probe, next node is destination")
+		// TODO (shiva): Add locks here
+		// Remove the current Probe ID from our table as we dont need it now
+		delete(s.dynamicInfoTable, mess.ProbeID)
+		return *mess, nil
+	}
+
+	log.Infof("dest %v, nextNode %v %d    %d", dest, nextNodePrefix, len(dest), len(nextNodePrefix))
 	log.Infof("Sending dynamic probe to %d", nodePubKeyHash)
 	err = s.sendToPeer(nodePubKeyHash, mess)
 	if err != nil {
 		log.Infof("Failed to send message to peer %v", err)
-		return err
+		return lnwire.DynamicInfoProbeMess{}, err
 	}
-	return nil
+
+	// Wait for the probe result/ until a timeout
+	// TODO (shiva): Configure the timeout
+	select {
+	case m := <-s.dynInfoResultChan:
+		if errorType(m.ErrorFlag) != errorNone {
+			log.Infof("Error code received is %d", m.ErrorFlag)
+			return m, errors.New(errorType(m.ErrorFlag).string())
+		}
+		return m, nil
+	}
+
 }
 
 // Checks if there exists a channel to the 'nextNode' with atleast the
@@ -514,6 +610,11 @@ func (s *speedyMurmursGossip) isSufficientCapacity(amt lnwire.MilliSatoshi, next
 	err = selfNode.ForEachChannel(nil, func(_ *bbolt.Tx, chanInfo *channeldb.ChannelEdgeInfo,
 		outEdge, _ *channeldb.ChannelEdgePolicy) error {
 
+		// If one channel has been found which can satisfy the condition, there is
+		// no need to iterate over others
+		if chanFound == true {
+			return nil
+		}
 		// If there is no edge policy for this candidate
 		// node, skip.
 		if outEdge == nil {
@@ -522,15 +623,17 @@ func (s *speedyMurmursGossip) isSufficientCapacity(amt lnwire.MilliSatoshi, next
 		}
 
 		// Checking if the channel belongs to the 'nextNode' in question
-		if !reflect.DeepEqual(nextNode.PubKeyBytes, chanInfo.NodeKey2Bytes) {
+		if !reflect.DeepEqual(nextNode.PubKeyBytes, chanInfo.NodeKey1Bytes) &&
+			!reflect.DeepEqual(nextNode.PubKeyBytes, chanInfo.NodeKey2Bytes) {
 			log.Info("Next node not matching")
-		} else {
-			log.Info("Next node matched")
+			return nil
 		}
-		// log.Infof("%v", selfNode.PubKeyBytes)
-		// log.Infof("%v", nextNode.PubKeyBytes)
-		// log.Infof("%v", chanInfo.NodeKey1Bytes)
-		// log.Infof("%v", chanInfo.NodeKey2Bytes)
+
+		log.Infof("Getting the next hop")
+		log.Infof("%v", selfNode.PubKeyBytes)
+		log.Infof("%v", nextNode.PubKeyBytes)
+		log.Infof("%v", chanInfo.NodeKey1Bytes)
+		log.Infof("%v", chanInfo.NodeKey2Bytes)
 		// nodeFee := computeFee(payment.Amount, inEdge)
 		// amtToSend := payment.Amount + nodeFee
 		err := checkAmtValid(amt, chanInfo, outEdge)
@@ -552,6 +655,21 @@ func (s *speedyMurmursGossip) isSufficientCapacity(amt lnwire.MilliSatoshi, next
 
 }
 
+func (s *speedyMurmursGossip) sendErrorToPeer(e errorType, m lnwire.DynamicInfoProbeMess) error {
+
+	log.Infof("Sending error %d to peer", errorType(m.ErrorFlag))
+	// start sending the message to the downstream peer, as
+	// it is intended to reach the initiator of this probe
+	m.IsUpstream = 0
+	m.ErrorFlag = byte(e)
+	// m.NodeID is the downstream peer who sent this message
+	err := s.sendToPeer(m.NodeID, &m)
+	if err != nil {
+		log.Infof("Error in sending errormessage to downstream peer")
+	}
+	return err
+}
+
 // Note: This MUST be run as a goroutine
 // This goroutine handles upstream and downstream probe info query
 // TODO (shiva): Handle all the errors and propogate it to the source
@@ -563,6 +681,7 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 			if m.IsUpstream == 1 {
 				if _, ok := s.dynamicInfoFrwdTable[m.ProbeID]; ok {
 					log.Infof("Error duplicate probe message sent")
+					s.sendErrorToPeer(errorDuplicateProbe, m)
 					continue
 				}
 
@@ -585,13 +704,10 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 					continue
 				}
 
-				// Storing the sender information and probeID, useful during downstream
-				// message processing
-				s.dynamicInfoFrwdTable[m.ProbeID] = m.NodeID
-
 				nextNode, err := s.getNextNodeInRoute(dest)
 				if err != nil {
 					log.Infof("Error while getting information about next node in route %v", err)
+					s.sendErrorToPeer(errorNoNextNode, m)
 					continue
 				}
 				// Check if any channel to the 'nextNode' has sufficient balance
@@ -599,7 +715,13 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 				_, err = s.isSufficientCapacity(m.Amount, nextNode)
 				if err != nil {
 					log.Infof("Error ProbeDynamicInfo %v", err)
+					s.sendErrorToPeer(errorProbeDynamicInfo, m)
+					continue
 				}
+
+				// Storing the sender information and probeID, useful during downstream
+				// message processing
+				s.dynamicInfoFrwdTable[m.ProbeID] = m.NodeID
 				// Updating the nodeID with the one who will be sending this
 				// upstream message.
 				m.NodeID = s.nodeID
@@ -614,8 +736,14 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 					err := s.updateFee(&m)
 					if err != nil {
 						log.Infof("Error in updating fee %v", err)
+
 					}
 					log.Infof("Dynamic probe successfully reached sender, aggregated fee %d, CLTV aggregatd %d", m.Amount, m.CLTVAggregator)
+					// Send the probe result on the channel for the one who is waiting for it
+					select {
+					case s.dynInfoResultChan <- m:
+					}
+
 					// TODO (shiva): Add Write locks here
 					delete(s.dynamicInfoTable, m.ProbeID)
 					continue
@@ -626,13 +754,21 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 					log.Infof("Error ProbeID for the query not present in table")
 					continue
 				}
-				// Update the fee information in the message
-				err := s.updateFee(&m)
-				if err != nil {
-					log.Infof("Error in updating fee %v", err)
+
+				if errorType(m.ErrorFlag) == errorNone {
+					// Update the fee information in the message only if there is
+					// no error
+					err := s.updateFee(&m)
+					if err != nil {
+						log.Infof("Error in updating fee %v", err)
+						m.ErrorFlag = errorFeeUpdate
+					}
 				}
 				// Just forward the message downstream without modifying anything
-				s.sendToPeer(nodeID, &m)
+				err := s.sendToPeer(nodeID, &m)
+				if err != nil {
+					log.Infof("Error in forwarding message downstream %v", err)
+				}
 				// Remove the ID from the table
 				delete(s.dynamicInfoFrwdTable, m.ProbeID)
 
@@ -688,6 +824,9 @@ func (s *speedyMurmursGossip) updateFee(m *lnwire.DynamicInfoProbeMess) error {
 	err = selfNode.ForEachChannel(nil, func(_ *bbolt.Tx, chanInfo *channeldb.ChannelEdgeInfo,
 		outEdge, chanPolicy *channeldb.ChannelEdgePolicy) error {
 
+		if chanFound == true {
+			return nil
+		}
 		// If there is no edge policy for this candidate
 		// node, skip.
 		if outEdge == nil {
@@ -695,6 +834,10 @@ func (s *speedyMurmursGossip) updateFee(m *lnwire.DynamicInfoProbeMess) error {
 			return nil
 		}
 
+		log.Infof("%v", selfNode.PubKeyBytes)
+		log.Infof("%v", nextNode.PubKeyBytes)
+		log.Infof("%v", chanInfo.NodeKey1Bytes)
+		log.Infof("%v", chanInfo.NodeKey2Bytes)
 		// Checking if the channel belongs to the 'nextNode' in question
 		if !reflect.DeepEqual(nextNode.PubKeyBytes, chanInfo.NodeKey1Bytes) &&
 			!reflect.DeepEqual(nextNode.PubKeyBytes, chanInfo.NodeKey2Bytes) {
@@ -715,6 +858,7 @@ func (s *speedyMurmursGossip) updateFee(m *lnwire.DynamicInfoProbeMess) error {
 		m.Amount = m.Amount + computeFee(m.Amount, chanPolicy)
 		m.CLTVAggregator = m.CLTVAggregator + uint32(chanPolicy.TimeLockDelta)
 		chanFound = true
+		log.Infof("Updated amt, cltv %d, %d", m.Amount, m.CLTVAggregator)
 		return nil
 	})
 

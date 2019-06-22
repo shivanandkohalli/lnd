@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"math"
 	"strings"
 	"sync"
@@ -729,6 +730,7 @@ func (b *BtcWallet) IsSynced() (bool, int64, error) {
 		return false, 0, err
 	}
 
+	log.Printf("BTCWALLET: syncHeight, bestHeight, %d %d", syncState.Height, bestHeight)
 	// If the wallet hasn't yet fully synced to the node's best chain tip,
 	// then we're not yet fully synced.
 	if syncState.Height < bestHeight || !b.wallet.ChainSynced() {

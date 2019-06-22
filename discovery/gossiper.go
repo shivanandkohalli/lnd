@@ -2697,6 +2697,7 @@ func (d *AuthenticatedGossiper) sendToPeerByHash(pubKeyHash uint32, msg lnwire.M
 	identityKey, ok := d.peerPubkeysMap[pubKeyHash]
 	d.peerPubkeyMutex.RUnlock()
 	if !ok {
+		log.Infof("%v, pubkeyHash is %d", d.peerPubkeysMap, pubKeyHash)
 		return errors.New("Peer not added in hash->pubkey map")
 	}
 	err := d.cfg.SendToPeer(identityKey, msg)
