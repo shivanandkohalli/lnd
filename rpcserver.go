@@ -2901,7 +2901,8 @@ func (r *rpcServer) sendPayment(stream *paymentStream) error {
 func (r *rpcServer) SendPaymentSync(ctx context.Context,
 	nextPayment *lnrpc.SendRequest) (*lnrpc.SendResponse, error) {
 
-	rpcsLog.Infof("Printing the received test destination %v", nextPayment.TestDestination)
+	rpcsLog.Infof("Printing the received coordinates of destination %v", nextPayment.TestDestination)
+	rpcsLog.Infof("Printing the received invoice %v", nextPayment)
 	return r.sendPaymentSync(ctx, &rpcPaymentRequest{
 		SendRequest: nextPayment,
 	})

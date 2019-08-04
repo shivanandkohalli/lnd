@@ -145,6 +145,14 @@ type Config struct {
 	// TODO(roasbeef): extract ann crafting + sign from fundingMgr into
 	// here?
 	AnnSigner lnwallet.MessageSigner
+
+	// QueryBandwidth is a method that allows to query the lower
+	// link layer to determine the up to date available bandwidth at a
+	// prospective link to be traversed. If the  link isn't available, then
+	// a value of zero should be returned. Otherwise, the current up to
+	// date knowledge of the available bandwidth of the link should be
+	// returned.
+	QueryBandwidth func(edge *channeldb.ChannelEdgeInfo) lnwire.MilliSatoshi
 }
 
 // AuthenticatedGossiper is a subsystem which is responsible for receiving
@@ -270,7 +278,7 @@ func New(cfg Config, selfKey *btcec.PublicKey) (*AuthenticatedGossiper, error) {
 		peerPubkeysMap:          make(map[uint32]*btcec.PublicKey),
 	}
 
-	gossiper.SmGossip = newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, cfg.Broadcast, gossiper.sendToPeerByHash, cfg.Router.FetchLightningNode)
+	gossiper.SmGossip = newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, cfg.Broadcast, gossiper.sendToPeerByHash, cfg.Router.FetchLightningNode, cfg.QueryBandwidth)
 	return gossiper, nil
 }
 
