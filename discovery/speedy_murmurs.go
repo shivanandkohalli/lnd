@@ -78,7 +78,10 @@ type speedyMurmursGossip struct {
 
 	// Channel to send the collected result from the dynamic info probe
 	dynInfoResultChan chan lnwire.DynamicInfoProbeMess
-	rand              *rand.Rand
+
+	// To know the how much bandwidth/amount is present between the channel edge
+	queryBandwidth func(edge *channeldb.ChannelEdgeInfo) lnwire.MilliSatoshi
+	rand           *rand.Rand
 
 	quit chan struct{}
 }
@@ -141,7 +144,7 @@ func (s *speedyMurmursGossip) stop() {
 
 // NewSpeedyMurmurGossip ....
 func newSpeedyMurmurGossip(nodeID uint32, spannTree *spanningTreeIdentity, broadCast func(skips map[routing.Vertex]struct{},
-	msg ...lnwire.Message) error, sendToPeer func(pubKeyHash uint32, msg lnwire.Message) error, fetchLightningNode func(routing.Vertex) (*channeldb.LightningNode, error)) *speedyMurmursGossip {
+	msg ...lnwire.Message) error, sendToPeer func(pubKeyHash uint32, msg lnwire.Message) error, fetchLightningNode func(routing.Vertex) (*channeldb.LightningNode, error), bandwidth func(edge *channeldb.ChannelEdgeInfo) lnwire.MilliSatoshi) *speedyMurmursGossip {
 	// TODO (shiva): Find a way that this channel gets assigned in their
 	// respective 'new' Methods
 	spannTree.processRecEmbChan = make(chan bool)
@@ -161,6 +164,7 @@ func newSpeedyMurmurGossip(nodeID uint32, spannTree *spanningTreeIdentity, broad
 		dynamicInfoFrwdTable:   make(map[uint32]uint32),
 		dynInfoProbeChan:       make(chan lnwire.DynamicInfoProbeMess),
 		dynInfoResultChan:      make(chan lnwire.DynamicInfoProbeMess),
+		queryBandwidth:         bandwidth,
 		quit:                   make(chan struct{}),
 	}
 }
@@ -393,7 +397,7 @@ func (s *speedyMurmursGossip) GetNextHop(dest []byte, amount lnwire.MilliSatoshi
 	if err != nil {
 		return htlcswitch.ForwardingInfo{}, err
 	}
-	node, err := s.getNextNodeInRoute(destEmbedding)
+	node, err := s.getNextNodeInRoute(destEmbedding, amount)
 	if err != nil {
 		return htlcswitch.ForwardingInfo{}, err
 	}
@@ -411,7 +415,7 @@ func (s *speedyMurmursGossip) GetNextHop(dest []byte, amount lnwire.MilliSatoshi
 // returns LightningNode, nil if it finds
 // returns nil, nil if this is the destination node
 // returns nil, err if there is any error
-func (s *speedyMurmursGossip) getNextNodeInRoute(dest []uint32) (*channeldb.LightningNode, error) {
+func (s *speedyMurmursGossip) getNextNodeInRoute(dest []uint32, amt lnwire.MilliSatoshi) (*channeldb.LightningNode, error) {
 	s.prefixMutex.RLock()
 	defer s.prefixMutex.RUnlock()
 
@@ -439,7 +443,7 @@ func (s *speedyMurmursGossip) getNextNodeInRoute(dest []uint32) (*channeldb.Ligh
 		}
 		dist := calcHopDistance(dest, emb)
 		if dist < minDist {
-			minDist = dist
+
 			nodePubKey, err := s.spannTree.getPubKeyFromHash(nodeID)
 			if err != nil {
 				log.Infof("Failed to retrieve pubkey for the node ID %d", nodeID)
@@ -450,7 +454,12 @@ func (s *speedyMurmursGossip) getNextNodeInRoute(dest []uint32) (*channeldb.Ligh
 				log.Infof("Error while fetching Lighting node %v", err)
 				continue
 			}
-			nextNode = node
+			_, err = s.isSufficientCapacity(amt, node)
+
+			if err == nil {
+				nextNode = node
+				minDist = dist
+			}
 		}
 	}
 
@@ -493,14 +502,17 @@ func computeFee(amt lnwire.MilliSatoshi,
 	return edge.FeeBaseMSat + (amt*edge.FeeProportionalMillionths)/1000000
 }
 
-func checkAmtValid(amtToSend lnwire.MilliSatoshi,
+func (s *speedyMurmursGossip) checkAmtValid(amtToSend lnwire.MilliSatoshi,
 	info *channeldb.ChannelEdgeInfo, edge *channeldb.ChannelEdgePolicy) error {
 	// If the estimated bandwidth of the channel edge is not able
 	// to carry the amount that needs to be send, return error.
-	if lnwire.NewMSatFromSatoshis(info.Capacity) < amtToSend {
-		return errors.New("Error, channel capacity less than the amount to send")
+
+	bandwidth := s.queryBandwidth(info)
+	log.Infof("Channel bandwidth is %d", bandwidth)
+	if bandwidth < amtToSend {
+		log.Infof("Error, channel capacity less than the amount to send required %d, but have %d", amtToSend, bandwidth)
+		return errors.New("Error, channel capacity less than the amount to send required but have")
 	}
-	log.Infof("Channel capacity, Min HTLC, Amount to forward %d %d %d", lnwire.NewMSatFromSatoshis(info.Capacity), edge.MinHTLC, amtToSend)
 	// If the amountToSend is less than the minimum required
 	// amount, return error.￼￼￼
 	if amtToSend < edge.MinHTLC {
@@ -517,7 +529,7 @@ func (s *speedyMurmursGossip) ProbeDynamicInfo(dest []uint32, payment *routing.L
 	r := s.rand.Uint32()
 	// TODO (shiva): Add locks here
 	s.dynamicInfoTable[r] = payment
-	nextNode, err := s.getNextNodeInRoute(dest)
+	nextNode, err := s.getNextNodeInRoute(dest, payment.Amount)
 	if err != nil {
 		return lnwire.DynamicInfoProbeMess{}, err
 	}
@@ -636,7 +648,7 @@ func (s *speedyMurmursGossip) isSufficientCapacity(amt lnwire.MilliSatoshi, next
 		log.Infof("%v", chanInfo.NodeKey2Bytes)
 		// nodeFee := computeFee(payment.Amount, inEdge)
 		// amtToSend := payment.Amount + nodeFee
-		err := checkAmtValid(amt, chanInfo, outEdge)
+		err := s.checkAmtValid(amt, chanInfo, outEdge)
 		if err != nil {
 			log.Infof("Error %v", err)
 		} else {
@@ -704,7 +716,7 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 					continue
 				}
 
-				nextNode, err := s.getNextNodeInRoute(dest)
+				nextNode, err := s.getNextNodeInRoute(dest, m.Amount)
 				if err != nil {
 					log.Infof("Error while getting information about next node in route %v", err)
 					s.sendErrorToPeer(errorNoNextNode, m)
@@ -789,7 +801,7 @@ func (s *speedyMurmursGossip) updateFee(m *lnwire.DynamicInfoProbeMess) error {
 	if err != nil {
 		return err
 	}
-	nextNode, err := s.getNextNodeInRoute(dest)
+	nextNode, err := s.getNextNodeInRoute(dest, m.Amount)
 	if err != nil {
 		return err
 	}
