@@ -529,6 +529,8 @@ func (s *speedyMurmursGossip) ProbeDynamicInfo(dest []uint32, payment *routing.L
 	r := s.rand.Uint32()
 	// TODO (shiva): Add locks here
 	s.dynamicInfoTable[r] = payment
+
+	payment.Amount = payment.Amount + (payment.Amount)/1000
 	nextNode, err := s.getNextNodeInRoute(dest, payment.Amount)
 	if err != nil {
 		return lnwire.DynamicInfoProbeMess{}, err
@@ -711,6 +713,8 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 					log.Infof("Dynamic probe message reached destination, reverting back to sender")
 					// Initiate downstream message
 					m.IsUpstream = 0
+
+					m.Amount = 10000 * 1000
 					// m.NodeID is the sender who sent this message
 					s.sendToPeer(m.NodeID, &m)
 					continue
