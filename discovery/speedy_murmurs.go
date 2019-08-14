@@ -530,7 +530,7 @@ func (s *speedyMurmursGossip) ProbeDynamicInfo(dest []uint32, payment *routing.L
 	// TODO (shiva): Add locks here
 	s.dynamicInfoTable[r] = payment
 
-	payment.Amount = payment.Amount + (payment.Amount)/1000
+	// payment.Amount = payment.Amount + (payment.Amount)/1000
 	nextNode, err := s.getNextNodeInRoute(dest, payment.Amount)
 	if err != nil {
 		return lnwire.DynamicInfoProbeMess{}, err

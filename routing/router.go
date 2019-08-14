@@ -1795,6 +1795,8 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 
 		log.Infof("GetNextHop %v", fwdInfo)
 		log.Infof("Source routing first hop %v Timelock%d ", firstHop, route.TotalTimeLock)
+
+		firstHop = fwdInfo.NextHop
 		// preImage, sendError = r.cfg.SendToSwitch(
 		// 	fwdInfo.NextHop, htlcAdd, circuit,
 		// )
