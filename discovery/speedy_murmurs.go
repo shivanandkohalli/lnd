@@ -464,6 +464,7 @@ func (s *speedyMurmursGossip) getNextNodeInRoute(dest []uint32, amt lnwire.Milli
 	}
 
 	if nextNode == nil {
+		log.Infof("Node address, Destination address %v %v", s.getPrefixEmbedding(), dest)
 		log.Infof("Map values %v", s.currentPrefixEmbedding)
 		return nil, errors.New("Error, Unable to find the next hop speedymurmurs")
 	}
@@ -636,6 +637,9 @@ func (s *speedyMurmursGossip) isSufficientCapacity(amt lnwire.MilliSatoshi, next
 			return nil
 		}
 
+		// if !reflect.DeepEqual(nextNode, outEdge.Node) {
+		// 	return nil
+		// }
 		// Checking if the channel belongs to the 'nextNode' in question
 		if !reflect.DeepEqual(nextNode.PubKeyBytes, chanInfo.NodeKey1Bytes) &&
 			!reflect.DeepEqual(nextNode.PubKeyBytes, chanInfo.NodeKey2Bytes) {
@@ -643,11 +647,11 @@ func (s *speedyMurmursGossip) isSufficientCapacity(amt lnwire.MilliSatoshi, next
 			return nil
 		}
 
-		log.Infof("Getting the next hop")
-		log.Infof("%v", selfNode.PubKeyBytes)
-		log.Infof("%v", nextNode.PubKeyBytes)
-		log.Infof("%v", chanInfo.NodeKey1Bytes)
-		log.Infof("%v", chanInfo.NodeKey2Bytes)
+		log.Infof("Outgoing channel for the next node found")
+		// log.Infof("%v", selfNode.PubKeyBytes)
+		// log.Infof("%v", nextNode.PubKeyBytes)
+		// log.Infof("%v", chanInfo.NodeKey1Bytes)
+		// log.Infof("%v", chanInfo.NodeKey2Bytes)
 		// nodeFee := computeFee(payment.Amount, inEdge)
 		// amtToSend := payment.Amount + nodeFee
 		err := s.checkAmtValid(amt, chanInfo, outEdge)
@@ -850,16 +854,19 @@ func (s *speedyMurmursGossip) updateFee(m *lnwire.DynamicInfoProbeMess) error {
 			return nil
 		}
 
-		log.Infof("%v", selfNode.PubKeyBytes)
-		log.Infof("%v", nextNode.PubKeyBytes)
-		log.Infof("%v", chanInfo.NodeKey1Bytes)
-		log.Infof("%v", chanInfo.NodeKey2Bytes)
+		// log.Infof("%v", selfNode.PubKeyBytes)
+		// log.Infof("%v", nextNode.PubKeyBytes)
+		// log.Infof("%v", chanInfo.NodeKey1Bytes)
+		// log.Infof("%v", chanInfo.NodeKey2Bytes)
 		// Checking if the channel belongs to the 'nextNode' in question
 		if !reflect.DeepEqual(nextNode.PubKeyBytes, chanInfo.NodeKey1Bytes) &&
 			!reflect.DeepEqual(nextNode.PubKeyBytes, chanInfo.NodeKey2Bytes) {
 			log.Info("Next node not matching")
 			return nil
 		}
+		// if !reflect.DeepEqual(nextNode, outEdge.Node) {
+		// 	return nil
+		// }
 		log.Info("Next node matched")
 
 		// log.Infof("%v", selfNode.PubKeyBytes)
