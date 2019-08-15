@@ -2686,10 +2686,16 @@ func (r *rpcServer) dispatchPaymentIntent(
 
 			probe, err := r.server.authGossiper.SmGossip.ProbeDynamicInfo(destEmbedding, payment)
 			if err != nil {
-				rpcsLog.Infof("Error while probing dynamic info %v", err)
-				return &paymentIntentResponse{
-					Err: err,
-				}, nil
+				rpcsLog.Infof("Error while probing dynamic info retryting%v", err)
+				retryCount = retryCount + 1
+
+				if retryCount > 5 {
+					return &paymentIntentResponse{
+						Err: err,
+					}, nil
+				}
+				continue
+
 			}
 
 			b, err := r.server.authGossiper.SmGossip.IntToByteArray(destEmbedding, 0)
