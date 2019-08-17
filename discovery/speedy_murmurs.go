@@ -464,6 +464,7 @@ func (s *speedyMurmursGossip) getNextNodeInRoute(dest []uint32, amt lnwire.Milli
 	}
 
 	if nextNode == nil {
+		log.Infof("Node address, Destination address %v %v", s.getPrefixEmbedding(), dest)
 		log.Infof("Map values %v", s.currentPrefixEmbedding)
 		return nil, errors.New("Error, Unable to find the next hop speedymurmurs")
 	}
@@ -529,6 +530,8 @@ func (s *speedyMurmursGossip) ProbeDynamicInfo(dest []uint32, payment *routing.L
 	r := s.rand.Uint32()
 	// TODO (shiva): Add locks here
 	s.dynamicInfoTable[r] = payment
+
+	// payment.Amount = payment.Amount + (payment.Amount)/1000
 	nextNode, err := s.getNextNodeInRoute(dest, payment.Amount)
 	if err != nil {
 		return lnwire.DynamicInfoProbeMess{}, err
@@ -634,6 +637,9 @@ func (s *speedyMurmursGossip) isSufficientCapacity(amt lnwire.MilliSatoshi, next
 			return nil
 		}
 
+		// if !reflect.DeepEqual(nextNode, outEdge.Node) {
+		// 	return nil
+		// }
 		// Checking if the channel belongs to the 'nextNode' in question
 		if !reflect.DeepEqual(nextNode.PubKeyBytes, chanInfo.NodeKey1Bytes) &&
 			!reflect.DeepEqual(nextNode.PubKeyBytes, chanInfo.NodeKey2Bytes) {
@@ -641,11 +647,11 @@ func (s *speedyMurmursGossip) isSufficientCapacity(amt lnwire.MilliSatoshi, next
 			return nil
 		}
 
-		log.Infof("Getting the next hop")
-		log.Infof("%v", selfNode.PubKeyBytes)
-		log.Infof("%v", nextNode.PubKeyBytes)
-		log.Infof("%v", chanInfo.NodeKey1Bytes)
-		log.Infof("%v", chanInfo.NodeKey2Bytes)
+		log.Infof("Outgoing channel for the next node found")
+		// log.Infof("%v", selfNode.PubKeyBytes)
+		// log.Infof("%v", nextNode.PubKeyBytes)
+		// log.Infof("%v", chanInfo.NodeKey1Bytes)
+		// log.Infof("%v", chanInfo.NodeKey2Bytes)
 		// nodeFee := computeFee(payment.Amount, inEdge)
 		// amtToSend := payment.Amount + nodeFee
 		err := s.checkAmtValid(amt, chanInfo, outEdge)
@@ -711,6 +717,8 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 					log.Infof("Dynamic probe message reached destination, reverting back to sender")
 					// Initiate downstream message
 					m.IsUpstream = 0
+
+					m.Amount = 10000 * 1000
 					// m.NodeID is the sender who sent this message
 					s.sendToPeer(m.NodeID, &m)
 					continue
@@ -846,16 +854,19 @@ func (s *speedyMurmursGossip) updateFee(m *lnwire.DynamicInfoProbeMess) error {
 			return nil
 		}
 
-		log.Infof("%v", selfNode.PubKeyBytes)
-		log.Infof("%v", nextNode.PubKeyBytes)
-		log.Infof("%v", chanInfo.NodeKey1Bytes)
-		log.Infof("%v", chanInfo.NodeKey2Bytes)
+		// log.Infof("%v", selfNode.PubKeyBytes)
+		// log.Infof("%v", nextNode.PubKeyBytes)
+		// log.Infof("%v", chanInfo.NodeKey1Bytes)
+		// log.Infof("%v", chanInfo.NodeKey2Bytes)
 		// Checking if the channel belongs to the 'nextNode' in question
 		if !reflect.DeepEqual(nextNode.PubKeyBytes, chanInfo.NodeKey1Bytes) &&
 			!reflect.DeepEqual(nextNode.PubKeyBytes, chanInfo.NodeKey2Bytes) {
 			log.Info("Next node not matching")
 			return nil
 		}
+		// if !reflect.DeepEqual(nextNode, outEdge.Node) {
+		// 	return nil
+		// }
 		log.Info("Next node matched")
 
 		// log.Infof("%v", selfNode.PubKeyBytes)

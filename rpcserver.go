@@ -2680,21 +2680,56 @@ func (r *rpcServer) dispatchPaymentIntent(
 		if payIntent.cltvDelta != 0 {
 			payment.FinalCLTVDelta = &payIntent.cltvDelta
 		}
-		probe, err := r.server.authGossiper.SmGossip.ProbeDynamicInfo(destEmbedding, payment)
-		if err != nil {
-			rpcsLog.Infof("Error while probing dynamic info %v", err)
-			return &paymentIntentResponse{
-				Err: err,
-			}, nil
+
+		retryCount := 0
+		for {
+
+			probe, err := r.server.authGossiper.SmGossip.ProbeDynamicInfo(destEmbedding, payment)
+			if err != nil {
+				rpcsLog.Infof("Error while probing dynamic info retryting%v", err)
+				retryCount = retryCount + 1
+
+				if retryCount > 5 {
+					return &paymentIntentResponse{
+						Err: err,
+					}, nil
+				}
+				continue
+
+			}
+
+			b, err := r.server.authGossiper.SmGossip.IntToByteArray(destEmbedding, 0)
+			if err != nil {
+				rpcsLog.Infof("Error transforming int to byte array %v", err)
+			}
+			preImage, route, routerErr = r.server.chanRouter.SendPayment(
+				payment, b, probe,
+			)
+
+			retryCount = retryCount + 1
+
+			fErr, ok := routerErr.(*htlcswitch.ForwardingError)
+			if !ok {
+				break
+			}
+
+			switch fErr.FailureMessage.(type) {
+			case *lnwire.FailIncorrectPaymentAmount:
+				rpcsLog.Infof("Received incorrect payment error amount")
+			default:
+				retryCount = 5
+				break
+			}
+
+			if retryCount >= 5 {
+				rpcsLog.Infof("Retry max attempts done, exiting")
+				break
+			} else {
+				rpcsLog.Infof("Retry for incorrect payment amount, attempt number %d", retryCount)
+			}
+
 		}
 
-		b, err := r.server.authGossiper.SmGossip.IntToByteArray(destEmbedding, 0)
-		if err != nil {
-			rpcsLog.Infof("Error transforming int to byte array %v", err)
-		}
-		preImage, route, routerErr = r.server.chanRouter.SendPayment(
-			payment, b, probe,
-		)
 	} else {
 		payment := &routing.LightningPayment{
 			PaymentHash: payIntent.rHash,

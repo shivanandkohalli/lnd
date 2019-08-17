@@ -1778,7 +1778,7 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 		copy(htlcAdd.OnionBlob[:], onionBlob)
 		copy(htlcAdd.DestEmbedding[:], destEmbedding)
 
-		fwdInfo, err := r.GetNextHop(destEmbedding, route.TotalAmount)
+		fwdInfo, err := r.GetNextHop(destEmbedding, probe.Amount)
 		if err != nil {
 			log.Infof("GetNextHop %v", err)
 		}
@@ -1786,15 +1786,15 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 		// Attempt to send this payment through the network to complete
 		// the payment. If this attempt fails, then we'll continue on
 		// to the next available route.
-		firstHop := lnwire.NewShortChanIDFromInt(
-			route.Hops[0].ChannelID,
-		)
+
+		firstHop := fwdInfo.NextHop
 		preImage, sendError = r.cfg.SendToSwitch(
 			firstHop, htlcAdd, circuit,
 		)
 
 		log.Infof("GetNextHop %v", fwdInfo)
 		log.Infof("Source routing first hop %v Timelock%d ", firstHop, route.TotalTimeLock)
+
 		// preImage, sendError = r.cfg.SendToSwitch(
 		// 	fwdInfo.NextHop, htlcAdd, circuit,
 		// )

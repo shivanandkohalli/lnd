@@ -591,12 +591,14 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB, cc *chainControl,
 			if !bytes.Equal(edge.NodeKey1Bytes[:], selfNode.PubKeyBytes[:]) &&
 				!bytes.Equal(edge.NodeKey2Bytes[:], selfNode.PubKeyBytes[:]) {
 
+				srvrLog.Info("QueryBandwidth, we aren't on either side of channel")
 				return lnwire.NewMSatFromSatoshis(edge.Capacity)
 			}
 
 			cid := lnwire.NewChanIDFromOutPoint(&edge.ChannelPoint)
 			link, err := s.htlcSwitch.GetLink(cid)
 			if err != nil {
+				srvrLog.Info("QueryBandwidth, link isn't online")
 				// If the link isn't online, then we'll report
 				// that it has zero bandwidth to the router.
 				return 0
@@ -606,6 +608,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB, cc *chainControl,
 			// yet eligible to forward any HTLCs, then we'll treat
 			// it as if it isn't online in the first place.
 			if !link.EligibleToForward() {
+				srvrLog.Info("QueryBandwidth, link isn't eligible to forward any HTLCs")
 				return 0
 			}
 
