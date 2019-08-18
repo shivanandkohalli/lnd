@@ -2,6 +2,8 @@ package lnwire
 
 import (
 	"io"
+
+	"github.com/btcsuite/btcd/btcec"
 )
 
 // EmbeddingSize this will be the absolute size of the path embeddings in byte
@@ -21,13 +23,14 @@ type DynamicInfoProbeMess struct {
 	FeeAggregator  uint32
 	CLTVAggregator uint32
 	Destination    [EmbeddingSize]byte
+	ErrorPubKey    *btcec.PublicKey
 	ErrorFlag      byte
 	IsUpstream     uint8
 }
 
 // NewDynamicInfoProbeMess creates new instance of the probe message
 func NewDynamicInfoProbeMess(nodeID uint32, probeID uint32, amt MilliSatoshi, feeAggregator uint32,
-	cltvAggregator uint32, dest []byte, errorFlag uint8, isUpstream uint8) *DynamicInfoProbeMess {
+	cltvAggregator uint32, dest []byte, errorFlag uint8, isUpstream uint8, key *btcec.PublicKey) *DynamicInfoProbeMess {
 	mess := DynamicInfoProbeMess{
 		NodeID:         nodeID,
 		ProbeID:        probeID,
@@ -36,6 +39,7 @@ func NewDynamicInfoProbeMess(nodeID uint32, probeID uint32, amt MilliSatoshi, fe
 		CLTVAggregator: cltvAggregator,
 		ErrorFlag:      errorFlag,
 		IsUpstream:     isUpstream,
+		ErrorPubKey:    key,
 	}
 
 	copy(mess.Destination[:], dest)
@@ -54,6 +58,7 @@ func (s *DynamicInfoProbeMess) Decode(r io.Reader, pver uint32) error {
 		&s.FeeAggregator,
 		&s.CLTVAggregator,
 		s.Destination[:],
+		&s.ErrorPubKey,
 		&s.ErrorFlag,
 		&s.IsUpstream,
 	)
@@ -70,6 +75,7 @@ func (s *DynamicInfoProbeMess) Encode(w io.Writer, pver uint32) error {
 		s.FeeAggregator,
 		s.CLTVAggregator,
 		s.Destination[:],
+		s.ErrorPubKey,
 		s.ErrorFlag,
 		s.IsUpstream,
 	)
@@ -90,6 +96,6 @@ func (s *DynamicInfoProbeMess) MsgType() MessageType {
 // This is part of the lnwire.Message interface.
 func (s *DynamicInfoProbeMess) MaxPayloadLength(uint32) uint32 {
 
-	//4 + 4 + 8 + 4 + 4 + 80 + 1 + 1
-	return 106
+	//4 + 4 + 8 + 4 + 4 + 80 + 33 + 1 + 1
+	return 139
 }

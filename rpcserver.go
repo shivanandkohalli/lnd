@@ -2655,7 +2655,7 @@ type paymentIntentResponse struct {
 // unable to save the payment. The second error returned denotes if the payment
 // didn't succeed.
 func (r *rpcServer) dispatchPaymentIntent(
-	payIntent *rpcPaymentIntent, destEmbedding []uint32) (*paymentIntentResponse, error) {
+	payIntent *rpcPaymentIntent, destEmbedding []uint32, probeID uint32) (*paymentIntentResponse, error) {
 
 	// Construct a payment request to send to the channel router. If the
 	// payment is successful, the route chosen will be returned. Otherwise,
@@ -2686,7 +2686,7 @@ func (r *rpcServer) dispatchPaymentIntent(
 		retryCount := 0
 		for {
 
-			probe, err := r.server.authGossiper.SmGossip.ProbeDynamicInfo(destEmbedding, payment)
+			probe, err := r.server.authGossiper.SmGossip.ProbeDynamicInfo(destEmbedding, payment, probeID)
 			if err != nil {
 				rpcsLog.Infof("Error while probing dynamic info retryting%v", err)
 				retryCount = retryCount + 1
@@ -2888,9 +2888,9 @@ func (r *rpcServer) sendPayment(stream *paymentStream) error {
 					htlcSema <- struct{}{}
 				}()
 
-				// TODO (shiva): Send the destination embedding here
+				// TODO (shiva): Also Send the destination embedding and probe id here
 				resp, saveErr := r.dispatchPaymentIntent(
-					payIntent, nil,
+					payIntent, nil, 0,
 				)
 
 				switch {
@@ -2996,7 +2996,7 @@ func (r *rpcServer) sendPaymentSync(ctx context.Context,
 
 	// With the payment validated, we'll now attempt to dispatch the
 	// payment.
-	resp, saveErr := r.dispatchPaymentIntent(&payIntent, nextPayment.TestDestination)
+	resp, saveErr := r.dispatchPaymentIntent(&payIntent, nextPayment.TestDestination, nextPayment.ProbeId)
 	switch {
 	case saveErr != nil:
 		return nil, saveErr

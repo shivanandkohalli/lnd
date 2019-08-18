@@ -11,6 +11,7 @@ import (
 // scheme in speedymurmurs
 type ProbeInitMess struct {
 	ProbeID    uint32
+	Amount     MilliSatoshi
 	NodePubKey *btcec.PublicKey
 	ErrorKey1  *btcec.PublicKey
 	ErrorKey2  *btcec.PublicKey
@@ -28,6 +29,7 @@ var _ Message = (*ProbeInitMess)(nil)
 func (p *ProbeInitMess) Encode(w io.Writer, pver uint32) error {
 	return WriteElements(w,
 		p.ProbeID,
+		p.Amount,
 		p.NodePubKey,
 		p.ErrorKey1,
 		p.ErrorKey2,
@@ -42,6 +44,7 @@ func (p *ProbeInitMess) Encode(w io.Writer, pver uint32) error {
 func (p *ProbeInitMess) Decode(r io.Reader, pver uint32) error {
 	return ReadElements(r,
 		&p.ProbeID,
+		&p.Amount,
 		&p.NodePubKey,
 		&p.ErrorKey1,
 		&p.ErrorKey2,
@@ -60,6 +63,6 @@ func (p *ProbeInitMess) MsgType() MessageType {
 // AcceptChannel message.
 // This is part of the lnwire.Message interface.
 func (p *ProbeInitMess) MaxPayloadLength(uint32) uint32 {
-	// 4 + (33*3)
-	return 103
+	// 4 + 8 + (33*3)
+	return 111
 }

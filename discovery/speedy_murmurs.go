@@ -75,8 +75,12 @@ type speedyMurmursGossip struct {
 	dynamicInfoFrwdTable map[uint32]uint32
 
 	// When a payment is initated, the probe ID is mapped to the keys required
-	// for error decryption.
-	probeInitKeyMapping map[uint32]*ErrorDecryptor
+	// for error decryption. Stored at the source node
+	probeErrorPrivKeyMapping map[uint32]*ErrorDecryptor
+
+	// When a payment is initated, the probe ID is mapped to the pub keys required
+	// for error decryption. Stored at the destination node
+	probeErrorPubKeyMapping map[uint32]*lnwire.ProbeInitMess
 	// Channel to receive the dynamic info probe queries
 	dynInfoProbeChan chan lnwire.DynamicInfoProbeMess
 
@@ -164,24 +168,26 @@ func newSpeedyMurmurGossip(nodeID uint32, spannTree *spanningTreeIdentity, broad
 	// respective 'new' Methods
 	spannTree.processRecEmbChan = make(chan bool)
 	return &speedyMurmursGossip{
-		smGossipChan:           make(chan lnwire.PrefixEmbedding),
-		processRecEmbChan:      spannTree.processRecEmbChan,
-		broadcast:              broadCast,
-		nodeID:                 nodeID,
-		spannTree:              spannTree,
-		currentPrefixEmbedding: make(map[uint32][]uint32),
-		receivedPrefixNodes:    make(map[uint32]struct{}),
-		randomNodeCoordinate:   make(map[uint32]uint32),
-		rand:                   rand.New(rand.NewSource(time.Now().UnixNano())),
-		sendToPeer:             sendToPeer,
-		fetchLightningNode:     fetchLightningNode,
-		dynamicInfoTable:       make(map[uint32]*routing.LightningPayment),
-		dynamicInfoFrwdTable:   make(map[uint32]uint32),
-		dynInfoProbeChan:       make(chan lnwire.DynamicInfoProbeMess),
-		dynInfoResultChan:      make(chan lnwire.DynamicInfoProbeMess),
-		queryBandwidth:         bandwidth,
-		sendToPeerByPubKey:     sendToPeerByPubKey,
-		quit:                   make(chan struct{}),
+		smGossipChan:             make(chan lnwire.PrefixEmbedding),
+		processRecEmbChan:        spannTree.processRecEmbChan,
+		broadcast:                broadCast,
+		nodeID:                   nodeID,
+		spannTree:                spannTree,
+		currentPrefixEmbedding:   make(map[uint32][]uint32),
+		receivedPrefixNodes:      make(map[uint32]struct{}),
+		randomNodeCoordinate:     make(map[uint32]uint32),
+		rand:                     rand.New(rand.NewSource(time.Now().UnixNano())),
+		sendToPeer:               sendToPeer,
+		fetchLightningNode:       fetchLightningNode,
+		dynamicInfoTable:         make(map[uint32]*routing.LightningPayment),
+		dynamicInfoFrwdTable:     make(map[uint32]uint32),
+		probeErrorPrivKeyMapping: make(map[uint32]*ErrorDecryptor),
+		probeErrorPubKeyMapping:  make(map[uint32]*lnwire.ProbeInitMess),
+		dynInfoProbeChan:         make(chan lnwire.DynamicInfoProbeMess),
+		dynInfoResultChan:        make(chan lnwire.DynamicInfoProbeMess),
+		queryBandwidth:           bandwidth,
+		sendToPeerByPubKey:       sendToPeerByPubKey,
+		quit:                     make(chan struct{}),
 	}
 }
 
@@ -539,11 +545,17 @@ func (s *speedyMurmursGossip) checkAmtValid(amtToSend lnwire.MilliSatoshi,
 	return nil
 }
 
-func (s *speedyMurmursGossip) ProbeDynamicInfo(dest []uint32, payment *routing.LightningPayment) (lnwire.DynamicInfoProbeMess, error) {
+func (s *speedyMurmursGossip) ProbeDynamicInfo(dest []uint32, payment *routing.LightningPayment, probeID uint32) (lnwire.DynamicInfoProbeMess, error) {
 
 	log.Infof("ProbeDynamicInfo for destination address %v", dest)
 	// TODO (shiva): Check if the payment is already added in the table
-	r := s.rand.Uint32()
+
+	errDecryptor, ok := s.probeErrorPrivKeyMapping[probeID]
+	if !ok {
+		log.Info("Error, do not have error keys corresponding to probeID")
+		return lnwire.DynamicInfoProbeMess{}, errors.New("Error, do not have error keys corresponding to probeID")
+	}
+	r := probeID
 	// TODO (shiva): Add locks here
 	s.dynamicInfoTable[r] = payment
 
@@ -569,7 +581,8 @@ func (s *speedyMurmursGossip) ProbeDynamicInfo(dest []uint32, payment *routing.L
 	if err != nil {
 		log.Infof("Error while converting 'ProbeDynamicInfo' %v", err)
 	}
-	mess := lnwire.NewDynamicInfoProbeMess(s.nodeID, r, payment.Amount, 0, 0, b, 0, 1)
+	mess := lnwire.NewDynamicInfoProbeMess(s.nodeID, r, payment.Amount, 0, 0, b, 0, 1, errDecryptor.ErrorKey1.PubKey())
+	log.Infof("Sender, error probe %v %v", errDecryptor.ErrorKey1.PubKey(), errDecryptor.ErrorKey2.PubKey())
 
 	// Adding the CLTV delta for the destination node, as the sender has
 	// received this information from the invoice. The other CLTV deltas
@@ -730,7 +743,16 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 				retval := reflect.DeepEqual(s.currentPrefixEmbedding[s.nodeID][:], dest[:])
 				s.prefixMutex.RUnlock()
 				if retval {
+
+					errKeys, ok := s.probeErrorPubKeyMapping[m.ProbeID]
+					if !ok {
+						// Send error that destination has not received the pubkey mappings
+						log.Infof("Error, destination has not received the error pubkey")
+						continue
+					}
 					log.Infof("Dynamic probe message reached destination, reverting back to sender")
+					m.Amount = errKeys.Amount
+					m.ErrorPubKey = errKeys.ErrorKey2
 					// Initiate downstream message
 					m.IsUpstream = 0
 
@@ -774,7 +796,7 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 						log.Infof("Error in updating fee %v", err)
 
 					}
-					log.Infof("Dynamic probe successfully reached sender, aggregated fee %d, CLTV aggregatd %d", m.Amount, m.CLTVAggregator)
+					log.Infof("Dynamic probe successfully reached sender, aggregated fee %d, CLTV aggregatd %d, Error pubkey %v", m.Amount, m.CLTVAggregator, m.ErrorPubKey)
 					// Send the probe result on the channel for the one who is waiting for it
 					select {
 					case s.dynInfoResultChan <- m:
@@ -915,11 +937,27 @@ func pubKeyHash(pubKeyBytes [33]byte) uint32 {
 func (s *speedyMurmursGossip) SendInvoiceProbeInfo(IdentityKey *btcec.PublicKey) (uint32, error) {
 	probeID := s.rand.Uint32()
 
+	k1, _ := btcec.NewPrivateKey(btcec.S256())
+	k2, _ := btcec.NewPrivateKey(btcec.S256())
+
+	e := &ErrorDecryptor{
+		ProbeID:   probeID,
+		ErrorKey1: k1,
+		ErrorKey2: k2,
+	}
+
+	_, ok := s.probeErrorPrivKeyMapping[probeID]
+	if ok {
+		log.Infof("SendInvoiceProbeInfo already existing in the map")
+		return 0, errors.New("SendInvoiceProbeInfo already existing in the map")
+	}
+	s.probeErrorPrivKeyMapping[probeID] = e
+
 	m := &lnwire.ProbeInitMess{
 		ProbeID:    probeID,
 		NodePubKey: s.spannTree.selfPubKey,
-		ErrorKey1:  s.spannTree.selfPubKey,
-		ErrorKey2:  s.spannTree.selfPubKey,
+		ErrorKey1:  e.ErrorKey1.PubKey(),
+		ErrorKey2:  e.ErrorKey2.PubKey(),
 	}
 	err := s.sendToPeerByPubKey(IdentityKey, m)
 
@@ -932,6 +970,6 @@ func (s *speedyMurmursGossip) SendInvoiceProbeInfo(IdentityKey *btcec.PublicKey)
 
 func (s *speedyMurmursGossip) ReceiveInvoiceProbeInfo(m *lnwire.ProbeInitMess) error {
 	log.Infof("SpeedyMurmurs, received *lnwire.ProbeInitMess")
-	// TODO: store probeID -> received message
+	s.probeErrorPubKeyMapping[m.ProbeID] = m
 	return nil
 }

@@ -771,6 +771,7 @@ message SendRequest {
     FeeLimit fee_limit = 8;
 
     repeated uint32 test_destination = 9;
+    uint32 probe_id = 10;
 }
 message SendResponse {
     string payment_error = 1 [json_name = "payment_error"];

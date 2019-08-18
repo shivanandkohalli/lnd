@@ -150,7 +150,7 @@ func initAutoPilot(svr *server, cfg *autoPilotConfig) *autopilot.ManagerCfg {
 						"address type %T", addr)
 				}
 
-				err := svr.ConnectToPeer(lnAddr, false)
+				_, err := svr.ConnectToPeer(lnAddr, false, true)
 				if err != nil {
 					// If we weren't able to connect to the
 					// peer at this address, then we'll move
