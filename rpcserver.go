@@ -993,13 +993,15 @@ func (r *rpcServer) ConnectPeer(ctx context.Context,
 	rpcsLog.Debugf("[connectpeer] requested connection to %x@%s",
 		peerAddr.IdentityKey.SerializeCompressed(), peerAddr.Address)
 
-	if err := r.server.ConnectToPeer(peerAddr, in.Perm); err != nil {
+	probeID, err := r.server.ConnectToPeer(peerAddr, in.Perm, in.ConnectToOpenChannel)
+
+	if err != nil {
 		rpcsLog.Errorf("[connectpeer]: error connecting to peer: %v", err)
-		return nil, err
+	} else {
+		rpcsLog.Debugf("Connected to peer: %v", peerAddr.String())
 	}
 
-	rpcsLog.Debugf("Connected to peer: %v", peerAddr.String())
-	return &lnrpc.ConnectPeerResponse{}, nil
+	return &lnrpc.ConnectPeerResponse{ProbeID: probeID}, nil
 }
 
 // DisconnectPeer attempts to disconnect one peer from another identified by a
@@ -2690,9 +2692,8 @@ func (r *rpcServer) dispatchPaymentIntent(
 				retryCount = retryCount + 1
 
 				if retryCount > 5 {
-					return &paymentIntentResponse{
-						Err: err,
-					}, nil
+					resp := &paymentIntentResponse{Err: err}
+					return resp, nil
 				}
 				continue
 

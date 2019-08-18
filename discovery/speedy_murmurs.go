@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec"
 	"github.com/coreos/bbolt"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/htlcswitch"
@@ -73,6 +74,9 @@ type speedyMurmursGossip struct {
 	// the downstream message
 	dynamicInfoFrwdTable map[uint32]uint32
 
+	// When a payment is initated, the probe ID is mapped to the keys required
+	// for error decryption.
+	probeInitKeyMapping map[uint32]*ErrorDecryptor
 	// Channel to receive the dynamic info probe queries
 	dynInfoProbeChan chan lnwire.DynamicInfoProbeMess
 
@@ -81,7 +85,11 @@ type speedyMurmursGossip struct {
 
 	// To know the how much bandwidth/amount is present between the channel edge
 	queryBandwidth func(edge *channeldb.ChannelEdgeInfo) lnwire.MilliSatoshi
-	rand           *rand.Rand
+
+	// function to send message to a peer where the peer is identified
+	// by its node pubkey
+	sendToPeerByPubKey func(target *btcec.PublicKey, msg ...lnwire.Message) error
+	rand               *rand.Rand
 
 	quit chan struct{}
 }
@@ -112,6 +120,13 @@ const (
 	// Error in updating the fees
 	errorFeeUpdate = 6
 )
+
+// ErrorDecryptor to store the keys for error decryption of the messages.
+type ErrorDecryptor struct {
+	ProbeID   uint32
+	ErrorKey1 *btcec.PrivateKey
+	ErrorKey2 *btcec.PrivateKey
+}
 
 func (c errorType) string() string {
 	switch c {
@@ -144,7 +159,7 @@ func (s *speedyMurmursGossip) stop() {
 
 // NewSpeedyMurmurGossip ....
 func newSpeedyMurmurGossip(nodeID uint32, spannTree *spanningTreeIdentity, broadCast func(skips map[routing.Vertex]struct{},
-	msg ...lnwire.Message) error, sendToPeer func(pubKeyHash uint32, msg lnwire.Message) error, fetchLightningNode func(routing.Vertex) (*channeldb.LightningNode, error), bandwidth func(edge *channeldb.ChannelEdgeInfo) lnwire.MilliSatoshi) *speedyMurmursGossip {
+	msg ...lnwire.Message) error, sendToPeer func(pubKeyHash uint32, msg lnwire.Message) error, fetchLightningNode func(routing.Vertex) (*channeldb.LightningNode, error), bandwidth func(edge *channeldb.ChannelEdgeInfo) lnwire.MilliSatoshi, sendToPeerByPubKey func(target *btcec.PublicKey, msg ...lnwire.Message) error) *speedyMurmursGossip {
 	// TODO (shiva): Find a way that this channel gets assigned in their
 	// respective 'new' Methods
 	spannTree.processRecEmbChan = make(chan bool)
@@ -165,6 +180,7 @@ func newSpeedyMurmurGossip(nodeID uint32, spannTree *spanningTreeIdentity, broad
 		dynInfoProbeChan:       make(chan lnwire.DynamicInfoProbeMess),
 		dynInfoResultChan:      make(chan lnwire.DynamicInfoProbeMess),
 		queryBandwidth:         bandwidth,
+		sendToPeerByPubKey:     sendToPeerByPubKey,
 		quit:                   make(chan struct{}),
 	}
 }
@@ -229,7 +245,7 @@ func (s *speedyMurmursGossip) startGossip() {
 			// We have received a new path embedding from the node
 			// connected to the root port. Update our embedding to this
 			// received value and broadcast to other nodes
-			//log.Infof("Current root port node is %d", rootPortNode)
+			log.Infof("Current root port node is %d", rootPortNode)
 			if ok {
 				s.prefixMutex.Lock()
 
@@ -894,4 +910,28 @@ func (s *speedyMurmursGossip) updateFee(m *lnwire.DynamicInfoProbeMess) error {
 func pubKeyHash(pubKeyBytes [33]byte) uint32 {
 	tempByteHash := sha256.Sum256(pubKeyBytes[:])
 	return binary.BigEndian.Uint32(tempByteHash[:])
+}
+
+func (s *speedyMurmursGossip) SendInvoiceProbeInfo(IdentityKey *btcec.PublicKey) (uint32, error) {
+	probeID := s.rand.Uint32()
+
+	m := &lnwire.ProbeInitMess{
+		ProbeID:    probeID,
+		NodePubKey: s.spannTree.selfPubKey,
+		ErrorKey1:  s.spannTree.selfPubKey,
+		ErrorKey2:  s.spannTree.selfPubKey,
+	}
+	err := s.sendToPeerByPubKey(IdentityKey, m)
+
+	if err != nil {
+		log.Infof("Error, SendInvoiceProbeInfo while sending message %v", err)
+	}
+	//TODO: Store info probeID -> key1,key2
+	return probeID, err
+}
+
+func (s *speedyMurmursGossip) ReceiveInvoiceProbeInfo(m *lnwire.ProbeInitMess) error {
+	log.Infof("SpeedyMurmurs, received *lnwire.ProbeInitMess")
+	// TODO: store probeID -> received message
+	return nil
 }

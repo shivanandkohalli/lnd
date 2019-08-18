@@ -58,6 +58,7 @@ const (
 	MsgSpeedyPrefixEmbedding               = 267
 	MsgDynamicInfoProbeMess                = 268
 	MsgTestMessage                         = 269
+	MsgProbeInitMess                       = 270
 )
 
 // String return the string representation of message type.
@@ -127,6 +128,8 @@ func (t MessageType) String() string {
 		return "DynamicInfoProbeMess"
 	case MsgTestMessage:
 		return "TestMessage"
+	case MsgProbeInitMess:
+		return "ProbeInitMess"
 	default:
 		return "<unknown>"
 	}
@@ -236,6 +239,8 @@ func makeEmptyMessage(msgType MessageType) (Message, error) {
 		msg = &DynamicInfoProbeMess{}
 	case MsgTestMessage:
 		msg = &TestMessage{}
+	case MsgProbeInitMess:
+		msg = &ProbeInitMess{}
 	default:
 		return nil, &UnknownMessage{msgType}
 	}

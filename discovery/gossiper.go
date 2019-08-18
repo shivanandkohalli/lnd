@@ -278,7 +278,7 @@ func New(cfg Config, selfKey *btcec.PublicKey) (*AuthenticatedGossiper, error) {
 		peerPubkeysMap:          make(map[uint32]*btcec.PublicKey),
 	}
 
-	gossiper.SmGossip = newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, cfg.Broadcast, gossiper.sendToPeerByHash, cfg.Router.FetchLightningNode, cfg.QueryBandwidth)
+	gossiper.SmGossip = newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, cfg.Broadcast, gossiper.sendToPeerByHash, cfg.Router.FetchLightningNode, cfg.QueryBandwidth, cfg.SendToPeer)
 	return gossiper, nil
 }
 
@@ -570,6 +570,11 @@ func (d *AuthenticatedGossiper) ProcessRemoteAnnouncement(msg lnwire.Message,
 	case *lnwire.TestMessage:
 		log.Info("Received Test Message")
 		errChan <- nil
+		return errChan
+	case *lnwire.ProbeInitMess:
+		log.Info("Received ProbeInitMess Message")
+		errChan <- nil
+		d.SmGossip.ReceiveInvoiceProbeInfo(m)
 		return errChan
 	}
 
@@ -2665,28 +2670,38 @@ func (d *AuthenticatedGossiper) updateChannel(info *channeldb.ChannelEdgeInfo,
 
 // AddNewPeer Updates information about the new peer which has joined in the
 // spanning tree related data structures.
-func (d *AuthenticatedGossiper) AddNewPeer(peer lnpeer.Peer) {
+func (d *AuthenticatedGossiper) AddNewPeer(peerIdentityKey *btcec.PublicKey) {
 	d.peerPubkeyMutex.Lock()
 	defer d.peerPubkeyMutex.Unlock()
 
-	log.Info("Adding new peer to spanning tree")
-	peerPubKey := peer.PubKey()
+	log.Info("Adding new peer to spanning tree and SM gossip")
+	peerPubKey := peerIdentityKey.SerializeCompressed()
 	peerPubKeyHash := d.spannTreeID.sha256ByteArray(peerPubKey[:])
+
+	_, ok := d.spannTreeID.connectedNodeState[peerPubKeyHash]
+	if ok {
+		// Peer already registered, returing
+		log.Info("Peer already registered in spanning tree and SM, returing")
+		return
+	}
 	d.spannTreeID.connectedNodeState[peerPubKeyHash] = "D"
-	d.spannTreeID.connectedNodePubkey[peerPubKeyHash] = peer.IdentityKey()
+	d.spannTreeID.connectedNodePubkey[peerPubKeyHash] = peerIdentityKey
 	// Send a Spanning tree hello message to the newly connected peer
 	m := &lnwire.SpanningTreeHello{
 		NodeID:     d.spannTreeID.nodeSpanTree.nodeID,
 		RootNodeID: d.spannTreeID.nodeSpanTree.rootNodeID,
 		CostToRoot: d.spannTreeID.nodeSpanTree.costToRoot,
 	}
-	d.cfg.SendToPeer(peer.IdentityKey(), m)
+	err := d.cfg.SendToPeer(peerIdentityKey, m)
+	if err != nil {
+		log.Infof("Error, unable to send spanning tree initial mess to new peer %v", err)
+	}
 
 	// TODO (shiva): Store this map of public keys to node ID's in a single place
 	// Adding the peer also to the map, which will be useful while sending individual
 	// messages to the peeers
 
-	d.peerPubkeysMap[peerPubKeyHash] = peer.IdentityKey()
+	d.peerPubkeysMap[peerPubKeyHash] = peerIdentityKey
 
 	b, err := d.SmGossip.registerPeer(peerPubKeyHash)
 	if err != nil {
@@ -2694,7 +2709,10 @@ func (d *AuthenticatedGossiper) AddNewPeer(peer lnpeer.Peer) {
 		return
 	}
 	s := lnwire.NewPrefixEmbedding(d.SmGossip.nodeID, b)
-	d.cfg.SendToPeer(peer.IdentityKey(), s)
+	err = d.cfg.SendToPeer(peerIdentityKey, s)
+	if err != nil {
+		log.Infof("Error, unable to send speedymurmur initial embedding to new peer %v", err)
+	}
 
 }
 

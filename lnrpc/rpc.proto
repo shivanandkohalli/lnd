@@ -908,8 +908,15 @@ message ConnectPeerRequest {
     /** If set, the daemon will attempt to persistently connect to the target
      * peer.  Otherwise, the call will be synchronous. */
     bool perm = 2;
+
+    // If set, the daemon will start the SpeedyMurmurs gossip protocol to build
+    // spanning tree and exchange coordinates. Else, it is percieved that this 
+    // connection is used for exchanging the keys and probe ID required during
+    // routing. 
+    bool connectToOpenChannel = 3;
 }
 message ConnectPeerResponse {
+    uint32 ProbeID = 1;
 }
 
 message DisconnectPeerRequest {

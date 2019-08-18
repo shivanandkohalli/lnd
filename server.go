@@ -2705,8 +2705,11 @@ type openChanReq struct {
 // connection is established, or the initial handshake process fails.
 //
 // NOTE: This function is safe for concurrent access.
-func (s *server) ConnectToPeer(addr *lnwire.NetAddress, perm bool) error {
+func (s *server) ConnectToPeer(addr *lnwire.NetAddress, perm bool, toOpenChannel bool) (uint32, error) {
 
+	// the ID generated for querying a route speedymurmurs
+	var probeID uint32
+	probeID = 0
 	targetPub := string(addr.IdentityKey.SerializeCompressed())
 
 	// Acquire mutex, but use explicit unlocking instead of defer for
@@ -2719,7 +2722,12 @@ func (s *server) ConnectToPeer(addr *lnwire.NetAddress, perm bool) error {
 	peer, err := s.findPeerByPubStr(targetPub)
 	if err == nil {
 		s.mu.Unlock()
-		return fmt.Errorf("already connected to peer: %v", peer)
+		if toOpenChannel == false {
+			probeID, err = s.authGossiper.SmGossip.SendInvoiceProbeInfo(addr.IdentityKey)
+		} else {
+			s.authGossiper.AddNewPeer(addr.IdentityKey)
+		}
+		return probeID, fmt.Errorf("already connected to peer: %v", peer)
 	}
 
 	// Peer was not found, continue to pursue connection with peer.
@@ -2752,7 +2760,7 @@ func (s *server) ConnectToPeer(addr *lnwire.NetAddress, perm bool) error {
 
 		go s.connMgr.Connect(connReq)
 
-		return nil
+		return 0, nil
 	}
 	s.mu.Unlock()
 
@@ -2765,9 +2773,16 @@ func (s *server) ConnectToPeer(addr *lnwire.NetAddress, perm bool) error {
 
 	select {
 	case err := <-errChan:
-		return err
+
+		if toOpenChannel {
+			s.authGossiper.AddNewPeer(addr.IdentityKey)
+			return 0, err
+		}
+		probeID, err = s.authGossiper.SmGossip.SendInvoiceProbeInfo(addr.IdentityKey)
+		return probeID, err
+
 	case <-s.quit:
-		return ErrServerShuttingDown
+		return 0, ErrServerShuttingDown
 	}
 }
 
