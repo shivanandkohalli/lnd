@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing"
 )
@@ -19,7 +20,7 @@ func mockSendToPeer(pubKeyHash uint32, msg lnwire.Message) error {
 }
 func TestStartGossip(t *testing.T) {
 	spannTreeID := newSpanTreeIdentity(nodeKeyPub1, mockBroadcast)
-	s := newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, mockBroadcast, mockSendToPeer, nil)
+	s := newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, mockBroadcast, mockSendToPeer, nil, nil, nil)
 
 	s.spannTree.rootPortNode = 1
 	go s.startGossip()
@@ -46,7 +47,7 @@ func TestStartGossip(t *testing.T) {
 }
 func TestCopyInt(t *testing.T) {
 	spannTreeID := newSpanTreeIdentity(nodeKeyPub1, nil)
-	smGossip := newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, nil, nil, nil)
+	smGossip := newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, nil, nil, nil, nil, nil)
 
 	a := make([]uint32, 3)
 	a[0] = 1
@@ -66,7 +67,7 @@ func TestCopyInt(t *testing.T) {
 }
 func TestInitEmbedding(t *testing.T) {
 	spannTreeID := newSpanTreeIdentity(nodeKeyPub1, nil)
-	smGossip := newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, nil, nil, nil)
+	smGossip := newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, nil, nil, nil, nil, nil)
 
 	smGossip.initEmbedding()
 	e := smGossip.getPrefixEmbedding()
@@ -77,7 +78,7 @@ func TestInitEmbedding(t *testing.T) {
 }
 func TestRegisterPeer(t *testing.T) {
 	spannTreeID := newSpanTreeIdentity(nodeKeyPub1, nil)
-	smGossip := newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, nil, nil, nil)
+	smGossip := newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, nil, nil, nil, nil, nil)
 	b, err := smGossip.registerPeer(5)
 	if err != nil {
 		t.Fatalf("Error in registering %v", err)
@@ -99,7 +100,7 @@ func TestRegisterPeer(t *testing.T) {
 func TestIntToByteArray(t *testing.T) {
 
 	spannTreeID := newSpanTreeIdentity(nodeKeyPub1, nil)
-	smGossip := newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, nil, nil, nil)
+	smGossip := newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, nil, nil, nil, nil, nil)
 	testInt := make([]uint32, 2)
 	testInt[0] = 1234
 	testInt[1] = 9812
@@ -138,7 +139,7 @@ func TestIntToByteArray(t *testing.T) {
 func TestByteToIntArray(t *testing.T) {
 
 	spannTreeID := newSpanTreeIdentity(nodeKeyPub1, nil)
-	smGossip := newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, nil, nil, nil)
+	smGossip := newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, nil, nil, nil, nil, nil)
 	var test [80]byte
 	_, error := smGossip.ByteToIntArray(test[:50])
 	if error == nil {
@@ -234,6 +235,36 @@ func TestCalcHopDistance(t *testing.T) {
 	retval = calcHopDistance(a, b)
 	if retval != 36 {
 		t.Fatalf("Incorrect hop distance calculated")
+	}
+
+}
+
+func TestEncryptionScheme(t *testing.T) {
+	// failure := &lnwire.FailUnknownNextPeer{}
+	failure := &lnwire.FailFinalIncorrectCltvExpiry{CltvExpiry: 55}
+
+	remoteKey, _ := btcec.NewPrivateKey(btcec.S256())
+
+	cipherText, err := EncryptError(failure, remoteKey.PubKey())
+
+	t.Logf("Length is %d", len(cipherText.Reason))
+	if err != nil {
+		t.Fatalf("Encryption error %v", err)
+	}
+
+	plainText, err := DecryptError(cipherText, remoteKey)
+
+	if err != nil {
+		t.Fatalf("DecryptError error %v", err)
+	}
+
+	switch plainText.(type) {
+	// If the end destination didn't know they payment
+	// hash, then we'll terminate immediately.
+	case *lnwire.FailFinalIncorrectCltvExpiry:
+		t.Log("Pass CLTV")
+	default:
+		t.Fatalf("Failed")
 	}
 
 }

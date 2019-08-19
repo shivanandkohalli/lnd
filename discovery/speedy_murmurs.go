@@ -12,6 +12,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/coreos/bbolt"
+	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -972,4 +973,44 @@ func (s *speedyMurmursGossip) ReceiveInvoiceProbeInfo(m *lnwire.ProbeInitMess) e
 	log.Infof("SpeedyMurmurs, received *lnwire.ProbeInitMess")
 	s.probeErrorPubKeyMapping[m.ProbeID] = m
 	return nil
+}
+
+// EncryptError ..
+func EncryptError(failure lnwire.FailureMessage, remoteKey *btcec.PublicKey) (*lnwire.PaymentError, error) {
+	// First encode the message and then encrypt it
+	var b bytes.Buffer
+	if err := lnwire.EncodeFailure(&b, failure, 0); err != nil {
+		return nil, err
+	}
+	ephPrivKey, _ := btcec.NewPrivateKey(btcec.S256())
+	sharedSecret := sphinx.GenerateSharedSecret(remoteKey, ephPrivKey)
+
+	keyType := "um" //predefined in the BOLTS
+	umKey := sphinx.GenerateKey(keyType, &sharedSecret)
+
+	stream := sphinx.GenerateCipherStream(umKey, uint(b.Len()))
+
+	errorMessage := &lnwire.PaymentError{}
+
+	errorMessage.Reason = make([]byte, len(stream))
+	sphinx.Xor(errorMessage.Reason, b.Bytes(), stream)
+	errorMessage.ErrorPubKey = ephPrivKey.PubKey()
+	return errorMessage, nil
+}
+
+// DecryptError ..
+func DecryptError(errorMessage *lnwire.PaymentError, localKey *btcec.PrivateKey) (lnwire.FailureMessage, error) {
+
+	sharedSecret := sphinx.GenerateSharedSecret(errorMessage.ErrorPubKey, localKey)
+	keyType := "um" //predefined in the BOLTS
+	umKey := sphinx.GenerateKey(keyType, &sharedSecret)
+
+	stream := sphinx.GenerateCipherStream(umKey, uint(len(errorMessage.Reason)))
+
+	plainError := make([]byte, len(stream))
+	sphinx.Xor(plainError, errorMessage.Reason, stream)
+
+	mess, err := lnwire.DecodeFailure(bytes.NewReader(plainError), 0)
+
+	return mess, err
 }
