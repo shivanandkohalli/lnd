@@ -1126,7 +1126,8 @@ out:
 			*lnwire.SpanningTreeHello,
 			*lnwire.PrefixEmbedding,
 			*lnwire.DynamicInfoProbeMess,
-			*lnwire.ProbeInitMess:
+			*lnwire.ProbeInitMess,
+			*lnwire.PaymentError:
 
 			discStream.AddMsg(msg)
 

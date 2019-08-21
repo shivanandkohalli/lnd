@@ -993,7 +993,7 @@ func (r *rpcServer) ConnectPeer(ctx context.Context,
 	rpcsLog.Debugf("[connectpeer] requested connection to %x@%s",
 		peerAddr.IdentityKey.SerializeCompressed(), peerAddr.Address)
 
-	probeID, err := r.server.ConnectToPeer(peerAddr, in.Perm, in.ConnectToOpenChannel)
+	probeID, err := r.server.ConnectToPeer(peerAddr, in.Perm, in.ConnectToOpenChannel, in.Amount)
 
 	if err != nil {
 		rpcsLog.Errorf("[connectpeer]: error connecting to peer: %v", err)

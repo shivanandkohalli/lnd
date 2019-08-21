@@ -2705,7 +2705,7 @@ type openChanReq struct {
 // connection is established, or the initial handshake process fails.
 //
 // NOTE: This function is safe for concurrent access.
-func (s *server) ConnectToPeer(addr *lnwire.NetAddress, perm bool, toOpenChannel bool) (uint32, error) {
+func (s *server) ConnectToPeer(addr *lnwire.NetAddress, perm bool, toOpenChannel bool, amount uint64) (uint32, error) {
 
 	// the ID generated for querying a route speedymurmurs
 	var probeID uint32
@@ -2723,7 +2723,7 @@ func (s *server) ConnectToPeer(addr *lnwire.NetAddress, perm bool, toOpenChannel
 	if err == nil {
 		s.mu.Unlock()
 		if toOpenChannel == false {
-			probeID, err = s.authGossiper.SmGossip.SendInvoiceProbeInfo(addr.IdentityKey)
+			probeID, err = s.authGossiper.SmGossip.SendInvoiceProbeInfo(addr.IdentityKey, amount)
 		} else {
 			s.authGossiper.AddNewPeer(addr.IdentityKey)
 		}
@@ -2778,7 +2778,7 @@ func (s *server) ConnectToPeer(addr *lnwire.NetAddress, perm bool, toOpenChannel
 			s.authGossiper.AddNewPeer(addr.IdentityKey)
 			return 0, err
 		}
-		probeID, err = s.authGossiper.SmGossip.SendInvoiceProbeInfo(addr.IdentityKey)
+		probeID, err = s.authGossiper.SmGossip.SendInvoiceProbeInfo(addr.IdentityKey, amount)
 		return probeID, err
 
 	case <-s.quit:

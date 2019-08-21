@@ -915,6 +915,8 @@ message ConnectPeerRequest {
     // connection is used for exchanging the keys and probe ID required during
     // routing. 
     bool connectToOpenChannel = 3;
+    // The invoice amount in satoshis
+    uint64 amount = 4;
 }
 message ConnectPeerResponse {
     uint32 ProbeID = 1;

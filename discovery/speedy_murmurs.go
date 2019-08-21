@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcutil"
 	"github.com/coreos/bbolt"
-	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -96,6 +96,14 @@ type speedyMurmursGossip struct {
 	sendToPeerByPubKey func(target *btcec.PublicKey, msg ...lnwire.Message) error
 	rand               *rand.Rand
 
+	// Receive the PaymentError message on this channel. This will be used for
+	// processing the error message and taking actions accordingly.
+	errorMessageChan chan lnwire.PaymentError
+
+	// The decrypted error for the dynamic probe message will be received on
+	// this channel
+	dynProbeError chan lnwire.FailureMessage
+
 	quit chan struct{}
 }
 
@@ -124,6 +132,19 @@ const (
 
 	// Error in updating the fees
 	errorFeeUpdate = 6
+
+	// Error the inital probe keys for error encryption not received
+	errorProbeKeysNotReceived = 7
+)
+
+const (
+	fwdErrTypeUpstream = 0
+
+	fwdErrTypeDownstream = 1
+
+	fwdErrTypeSource = 2
+
+	fwdErrTypeDest = 3
 )
 
 // ErrorDecryptor to store the keys for error decryption of the messages.
@@ -135,10 +156,13 @@ type ErrorDecryptor struct {
 
 func (c errorType) string() string {
 	switch c {
+
 	case errorNone:
 		return "errorNone"
+
 	case errorNoNextNode:
 		return "errorNoNextNode"
+
 	case errorDuplicateProbe:
 		return "errorDuplicateProbe"
 
@@ -153,6 +177,10 @@ func (c errorType) string() string {
 
 	case errorFeeUpdate:
 		return "errorFeeUpdate"
+
+	case errorProbeKeysNotReceived:
+		return "errorProbeKeysNotReceived"
+
 	default:
 		return "errorUnkown"
 	}
@@ -185,7 +213,9 @@ func newSpeedyMurmurGossip(nodeID uint32, spannTree *spanningTreeIdentity, broad
 		probeErrorPrivKeyMapping: make(map[uint32]*ErrorDecryptor),
 		probeErrorPubKeyMapping:  make(map[uint32]*lnwire.ProbeInitMess),
 		dynInfoProbeChan:         make(chan lnwire.DynamicInfoProbeMess),
+		errorMessageChan:         make(chan lnwire.PaymentError),
 		dynInfoResultChan:        make(chan lnwire.DynamicInfoProbeMess),
+		dynProbeError:            make(chan lnwire.FailureMessage),
 		queryBandwidth:           bandwidth,
 		sendToPeerByPubKey:       sendToPeerByPubKey,
 		quit:                     make(chan struct{}),
@@ -239,7 +269,9 @@ func (s *speedyMurmursGossip) copyInt(a []uint32) {
 // Note: This MUST be run as a goroutine
 func (s *speedyMurmursGossip) startGossip() {
 	s.initEmbedding()
+	// Starting the threads that will handle concurrent events
 	go s.processDynProbeInfo()
+	go s.processErrorMessages()
 	logTimer := time.NewTicker(10 * time.Second)
 	for {
 		select {
@@ -548,7 +580,7 @@ func (s *speedyMurmursGossip) checkAmtValid(amtToSend lnwire.MilliSatoshi,
 
 func (s *speedyMurmursGossip) ProbeDynamicInfo(dest []uint32, payment *routing.LightningPayment, probeID uint32) (lnwire.DynamicInfoProbeMess, error) {
 
-	log.Infof("ProbeDynamicInfo for destination address %v", dest)
+	log.Infof("ProbeDynamicInfo for destination address %v, probeID %d", dest, probeID)
 	// TODO (shiva): Check if the payment is already added in the table
 
 	errDecryptor, ok := s.probeErrorPrivKeyMapping[probeID]
@@ -583,7 +615,7 @@ func (s *speedyMurmursGossip) ProbeDynamicInfo(dest []uint32, payment *routing.L
 		log.Infof("Error while converting 'ProbeDynamicInfo' %v", err)
 	}
 	mess := lnwire.NewDynamicInfoProbeMess(s.nodeID, r, payment.Amount, 0, 0, b, 0, 1, errDecryptor.ErrorKey1.PubKey())
-	log.Infof("Sender, error probe %v %v", errDecryptor.ErrorKey1.PubKey(), errDecryptor.ErrorKey2.PubKey())
+	// log.Infof("Sender, error probe %v %v", errDecryptor.ErrorKey1.PubKey(), errDecryptor.ErrorKey2.PubKey())
 
 	// Adding the CLTV delta for the destination node, as the sender has
 	// received this information from the invoice. The other CLTV deltas
@@ -616,7 +648,10 @@ func (s *speedyMurmursGossip) ProbeDynamicInfo(dest []uint32, payment *routing.L
 		log.Infof("No need to send probe, next node is destination")
 		// TODO (shiva): Add locks here
 		// Remove the current Probe ID from our table as we dont need it now
-		delete(s.dynamicInfoTable, mess.ProbeID)
+		// TODO (shiva): Not clearing here as it will be again required when
+		// decrypting error messages. Need to clear the memory else it will
+		// keep growing
+		//delete(s.dynamicInfoTable, mess.ProbeID)
 		return *mess, nil
 	}
 
@@ -634,6 +669,16 @@ func (s *speedyMurmursGossip) ProbeDynamicInfo(dest []uint32, payment *routing.L
 	case m := <-s.dynInfoResultChan:
 		if errorType(m.ErrorFlag) != errorNone {
 			log.Infof("Error code received is %d", m.ErrorFlag)
+
+			// Wait for the decrypted message here
+			// If no message received within a timeout, we don't wait anymore
+			select {
+			case errMessage := <-s.dynProbeError:
+				log.Infof("Received error via channel dyn probe info, %s", errMessage.Error())
+				return m, errMessage
+			case <-time.After(4 * time.Second):
+				log.Infof("Error, waiting for the error message dyn probe timed out")
+			}
 			return m, errors.New(errorType(m.ErrorFlag).string())
 		}
 		return m, nil
@@ -727,11 +772,12 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 		case m := <-s.dynInfoProbeChan:
 			// Upstream message
 			if m.IsUpstream == 1 {
-				if _, ok := s.dynamicInfoFrwdTable[m.ProbeID]; ok {
-					log.Infof("Error duplicate probe message sent")
-					s.sendErrorToPeer(errorDuplicateProbe, m)
-					continue
-				}
+				// if _, ok := s.dynamicInfoFrwdTable[m.ProbeID]; ok {
+				// 	log.Infof("Error duplicate probe message sent")
+				// 	s.sendErrorToPeer(errorDuplicateProbe, m)
+				// 	s.SendErrorUpstream(lnwire.FailCodeDuplicateProbe{}, m.ErrorPubKey, m.Destination[:], m.ProbeID)
+				// 	continue
+				// }
 
 				dest, err := s.ByteToIntArray(m.Destination[:])
 				if err != nil {
@@ -748,6 +794,8 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 					errKeys, ok := s.probeErrorPubKeyMapping[m.ProbeID]
 					if !ok {
 						// Send error that destination has not received the pubkey mappings
+						s.sendErrorToPeer(errorProbeKeysNotReceived, m)
+						s.SendErrorUpstream(lnwire.FailCodeProbeKeysNotReceived{}, m.ErrorPubKey, m.Destination[:], m.ProbeID)
 						log.Infof("Error, destination has not received the error pubkey")
 						continue
 					}
@@ -756,8 +804,6 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 					m.ErrorPubKey = errKeys.ErrorKey2
 					// Initiate downstream message
 					m.IsUpstream = 0
-
-					m.Amount = 10000 * 1000
 					// m.NodeID is the sender who sent this message
 					s.sendToPeer(m.NodeID, &m)
 					continue
@@ -767,6 +813,7 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 				if err != nil {
 					log.Infof("Error while getting information about next node in route %v", err)
 					s.sendErrorToPeer(errorNoNextNode, m)
+					s.SendErrorUpstream(lnwire.FailInsufficientCapacity{}, m.ErrorPubKey, m.Destination[:], m.ProbeID)
 					continue
 				}
 				// Check if any channel to the 'nextNode' has sufficient balance
@@ -775,6 +822,7 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 				if err != nil {
 					log.Infof("Error ProbeDynamicInfo %v", err)
 					s.sendErrorToPeer(errorProbeDynamicInfo, m)
+					s.SendErrorUpstream(lnwire.FailInsufficientCapacity{}, m.ErrorPubKey, m.Destination[:], m.ProbeID)
 					continue
 				}
 
@@ -795,7 +843,6 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 					err := s.updateFee(&m)
 					if err != nil {
 						log.Infof("Error in updating fee %v", err)
-
 					}
 					log.Infof("Dynamic probe successfully reached sender, aggregated fee %d, CLTV aggregatd %d, Error pubkey %v", m.Amount, m.CLTVAggregator, m.ErrorPubKey)
 					// Send the probe result on the channel for the one who is waiting for it
@@ -804,7 +851,7 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 					}
 
 					// TODO (shiva): Add Write locks here
-					delete(s.dynamicInfoTable, m.ProbeID)
+					// delete(s.dynamicInfoTable, m.ProbeID)
 					continue
 				}
 
@@ -820,6 +867,7 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 					err := s.updateFee(&m)
 					if err != nil {
 						log.Infof("Error in updating fee %v", err)
+						s.SendErrorDownstream(lnwire.FailProbeFeeUpdate{}, m.ErrorPubKey, m.ProbeID)
 						m.ErrorFlag = errorFeeUpdate
 					}
 				}
@@ -828,8 +876,10 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 				if err != nil {
 					log.Infof("Error in forwarding message downstream %v", err)
 				}
+				// Not deleting the mappings as it is required during sending
+				// error in the encryption scheme
 				// Remove the ID from the table
-				delete(s.dynamicInfoFrwdTable, m.ProbeID)
+				//delete(s.dynamicInfoFrwdTable, m.ProbeID)
 
 			} else {
 				log.Infof("Error IsUpstream value unkown")
@@ -935,7 +985,7 @@ func pubKeyHash(pubKeyBytes [33]byte) uint32 {
 	return binary.BigEndian.Uint32(tempByteHash[:])
 }
 
-func (s *speedyMurmursGossip) SendInvoiceProbeInfo(IdentityKey *btcec.PublicKey) (uint32, error) {
+func (s *speedyMurmursGossip) SendInvoiceProbeInfo(IdentityKey *btcec.PublicKey, amount uint64) (uint32, error) {
 	probeID := s.rand.Uint32()
 
 	k1, _ := btcec.NewPrivateKey(btcec.S256())
@@ -956,6 +1006,7 @@ func (s *speedyMurmursGossip) SendInvoiceProbeInfo(IdentityKey *btcec.PublicKey)
 
 	m := &lnwire.ProbeInitMess{
 		ProbeID:    probeID,
+		Amount:     lnwire.NewMSatFromSatoshis(btcutil.Amount(amount)),
 		NodePubKey: s.spannTree.selfPubKey,
 		ErrorKey1:  e.ErrorKey1.PubKey(),
 		ErrorKey2:  e.ErrorKey2.PubKey(),
@@ -983,17 +1034,13 @@ func EncryptError(failure lnwire.FailureMessage, remoteKey *btcec.PublicKey) (*l
 		return nil, err
 	}
 	ephPrivKey, _ := btcec.NewPrivateKey(btcec.S256())
-	sharedSecret := sphinx.GenerateSharedSecret(remoteKey, ephPrivKey)
-
+	sharedSecret := GenerateSharedSecret(remoteKey, ephPrivKey)
 	keyType := "um" //predefined in the BOLTS
-	umKey := sphinx.GenerateKey(keyType, &sharedSecret)
-
-	stream := sphinx.GenerateCipherStream(umKey, uint(b.Len()))
+	umKey := GenerateKey(keyType, &sharedSecret)
+	stream := GenerateCipherStream(umKey, uint(b.Len()))
 
 	errorMessage := &lnwire.PaymentError{}
-
-	errorMessage.Reason = make([]byte, len(stream))
-	sphinx.Xor(errorMessage.Reason, b.Bytes(), stream)
+	Xor(errorMessage.Reason[:], b.Bytes(), stream)
 	errorMessage.ErrorPubKey = ephPrivKey.PubKey()
 	return errorMessage, nil
 }
@@ -1001,16 +1048,260 @@ func EncryptError(failure lnwire.FailureMessage, remoteKey *btcec.PublicKey) (*l
 // DecryptError ..
 func DecryptError(errorMessage *lnwire.PaymentError, localKey *btcec.PrivateKey) (lnwire.FailureMessage, error) {
 
-	sharedSecret := sphinx.GenerateSharedSecret(errorMessage.ErrorPubKey, localKey)
+	sharedSecret := GenerateSharedSecret(errorMessage.ErrorPubKey, localKey)
 	keyType := "um" //predefined in the BOLTS
-	umKey := sphinx.GenerateKey(keyType, &sharedSecret)
+	umKey := GenerateKey(keyType, &sharedSecret)
 
-	stream := sphinx.GenerateCipherStream(umKey, uint(len(errorMessage.Reason)))
+	stream := GenerateCipherStream(umKey, uint(len(errorMessage.Reason)))
 
 	plainError := make([]byte, len(stream))
-	sphinx.Xor(plainError, errorMessage.Reason, stream)
+	Xor(plainError, errorMessage.Reason[:], stream)
 
 	mess, err := lnwire.DecodeFailure(bytes.NewReader(plainError), 0)
 
 	return mess, err
+}
+
+// Find the next shortest node in the path to the destination
+// This method does not consider node balances while finding the
+// next node
+// returns LightningNode, nil if it finds
+// returns nil, nil if this is the destination node
+// returns nil, err if there is any error
+func (s *speedyMurmursGossip) getShortestNodeInRoute(dest []uint32) (*channeldb.LightningNode, error) {
+	s.prefixMutex.RLock()
+	defer s.prefixMutex.RUnlock()
+
+	var minDist uint8
+	// Assign the distance from this node to destination to the minDist as
+	// the next node in the path Must have a lesser distance than this value
+	minDist = calcHopDistance(dest, s.getPrefixEmbedding())
+	var nextNode *channeldb.LightningNode
+
+	// Checking if the destination is this node itself
+	if reflect.DeepEqual(dest, s.getPrefixEmbedding()) {
+		return nextNode, nil
+	}
+
+	for nodeID, emb := range s.currentPrefixEmbedding {
+
+		// skip if the nodeID is that of current node
+		if nodeID == s.nodeID {
+			continue
+		}
+		// Truncating the last coordinate due to the way coordinates are stored
+		// Refer 'currentPrefixEmbedding'
+		if len(emb) > 0 {
+			emb = emb[:len(emb)-1]
+		}
+		dist := calcHopDistance(dest, emb)
+		if dist < minDist {
+
+			nodePubKey, err := s.spannTree.getPubKeyFromHash(nodeID)
+			if err != nil {
+				log.Infof("Failed to retrieve pubkey for the node ID %d", nodeID)
+				continue
+			}
+			node, err := s.fetchLightningNode(routing.NewVertex(nodePubKey))
+			if err != nil {
+				log.Infof("Error while fetching Lighting node %v", err)
+				continue
+			}
+			if err == nil {
+				nextNode = node
+				minDist = dist
+			}
+		}
+	}
+
+	if nextNode == nil {
+		log.Infof("Node address, Destination address %v %v", s.getPrefixEmbedding(), dest)
+		log.Infof("Map values %v", s.currentPrefixEmbedding)
+		return nil, errors.New("Error, Unable to find the shortest hop speedymurmurs")
+	}
+	// _, err := nextNode.PubKey()
+	// if err != nil {
+	// 	return nil, errors.New("Error fetching pubkey")
+	// }
+	return nextNode, nil
+}
+
+// SendUpstreamError, send the error message towards the destination node so
+// that the destination can forward it on to the source node
+
+func (s *speedyMurmursGossip) SendErrorUpstream(failure lnwire.FailureMessage, remoteKey *btcec.PublicKey, dest []byte, probeID uint32) error {
+
+	destEmbedding, err := s.ByteToIntArray(dest)
+	if err != nil {
+		return err
+	}
+	nextNode, err := s.getShortestNodeInRoute(destEmbedding)
+
+	if err != nil {
+		log.Infof("SendErrorUpstream %v", err)
+		return err
+	}
+	if nextNode == nil && err == nil {
+		// TODO: This is the destination, send the error to the source node here
+	}
+
+	errMessage, err := EncryptError(failure, remoteKey)
+	if err != nil {
+		return err
+	}
+
+	copy(errMessage.Destination[:], dest)
+	errMessage.ProbeID = probeID
+
+	pubkey, _ := nextNode.PubKey()
+	err = s.sendToPeerByPubKey(pubkey, errMessage)
+	if err != nil {
+		log.Infof("Error, SendUpstreamError unable to send message to next peer")
+	}
+	return nil
+}
+
+// SendUpstreamError, send the error message towards the destination node so
+// that the destination can forward it on to the source node
+// returns LightningNode, nil if it finds
+// returns nil, nil if this is the destination node
+// returns nil, err if there is any error
+func (s *speedyMurmursGossip) SendErrorDownstream(failure lnwire.FailureMessage, remoteKey *btcec.PublicKey,
+	probeID uint32) error {
+	// Fetch the Node which had sent us the upstream message
+	nodeID, ok := s.dynamicInfoFrwdTable[probeID]
+	if !ok {
+		log.Infof("Error ProbeID for the query not present in table")
+		return errors.New("SendErrorDownstream Error ProbeID for the query not present in table")
+	}
+
+	errMessage, err := EncryptError(failure, remoteKey)
+	if err != nil {
+		return err
+	}
+
+	// Populate the probeID, so that the receiving peer can also forward accordingly
+	errMessage.ProbeID = probeID
+
+	err = s.sendToPeer(nodeID, errMessage)
+	if err != nil {
+		log.Infof("Error, SendErrorDownstream unable to send message to next peer")
+		return err
+	}
+	return nil
+}
+
+//
+func (s *speedyMurmursGossip) processErrorMessages() {
+	for {
+		select {
+		case m := <-s.errorMessageChan:
+			errMessDirection := s.parseErrMessType(&m)
+			switch errMessDirection {
+			case fwdErrTypeDownstream:
+				{
+					log.Info("processErrorMessages fwdErrTypeDownstream ")
+					nodeID, ok := s.dynamicInfoFrwdTable[m.ProbeID]
+					if !ok {
+						log.Infof("Error processErrorMessages ProbeID for the query not present in table")
+						continue
+					}
+					err := s.sendToPeer(nodeID, &m)
+					if err != nil {
+						log.Infof("Error processErrorMessages in forwarding message downstream %v", err)
+						continue
+					}
+				}
+			case fwdErrTypeUpstream:
+				{
+					log.Info("processErrorMessages fwdErrTypeUpstream ")
+					destEmbedding, err := s.ByteToIntArray(m.Destination[:])
+					if err != nil {
+						log.Infof("Error ByteToIntArray processErrorMessages  %v", err)
+						continue
+					}
+					nextNode, err := s.getShortestNodeInRoute(destEmbedding)
+
+					if err != nil {
+						log.Infof("Error getShortestNodeInRoute processErrorMessages %v", err)
+						continue
+					}
+					pubkey, _ := nextNode.PubKey()
+					err = s.sendToPeerByPubKey(pubkey, &m)
+					if err != nil {
+						log.Infof("Error, processErrorMessages unable to send message to next peer")
+					}
+
+				}
+			case fwdErrTypeDest:
+				{
+					log.Info("processErrorMessages fwdErrTypeDest ")
+					sourceMapping, ok := s.probeErrorPubKeyMapping[m.ProbeID]
+					if !ok {
+						log.Infof("Error, processErrorMessages destination has not received the error pubkey")
+						continue
+					}
+
+					err := s.sendToPeerByPubKey(sourceMapping.NodePubKey, &m)
+					if err != nil {
+						log.Infof("Error, processErrorMessages sendToPeerByPubKey %v", err)
+						continue
+					}
+				}
+			case fwdErrTypeSource:
+				log.Info("processErrorMessages fwdErrTypeSource ")
+				errorDecryptor, ok := s.probeErrorPrivKeyMapping[m.ProbeID]
+				if !ok {
+					log.Infof("Error, processErrorMessages source node private key mappings not found")
+					continue
+				}
+
+				// Checking with the two keys here as we are not aware whether the received
+				// message was from upstream or downstream peer.
+				// TODO (shiva): fix by either adding stream info or convey it via the destination node
+				var failureMessage lnwire.FailureMessage
+				failureMessage, err := DecryptError(&m, errorDecryptor.ErrorKey1)
+				if err != nil {
+					failureMessage, err = DecryptError(&m, errorDecryptor.ErrorKey2)
+					if err != nil {
+						log.Infof("Error processErrorMessages decryption %v ", err)
+					}
+				}
+
+				select {
+				case s.dynProbeError <- failureMessage:
+
+				case <-time.After(4 * time.Second):
+					log.Infof("Error, Timed out processErrorMessages")
+				}
+			}
+		}
+	}
+}
+
+func (s *speedyMurmursGossip) parseErrMessType(mess *lnwire.PaymentError) int {
+
+	// Check if this probe was initiated by current node
+	_, ok := s.dynamicInfoTable[mess.ProbeID]
+	if ok {
+		return fwdErrTypeSource
+	}
+
+	b := make([]byte, 80)
+
+	if reflect.DeepEqual(mess.Destination[:], b) {
+		return fwdErrTypeDownstream
+	}
+
+	dest, _ := s.ByteToIntArray(mess.Destination[:])
+	// Check if the current node is the destination
+	s.prefixMutex.RLock()
+	retval := reflect.DeepEqual(s.getPrefixEmbedding(), dest)
+	s.prefixMutex.RUnlock()
+	if retval {
+		return fwdErrTypeDest
+	}
+
+	return fwdErrTypeUpstream
+
 }

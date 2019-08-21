@@ -78,6 +78,11 @@ const (
 	CodeFinalIncorrectCltvExpiry      FailCode = 18
 	CodeFinalIncorrectHtlcAmount      FailCode = 19
 	CodeExpiryTooFar                  FailCode = 21
+	// SM
+	CodeInsufficientCapacity FailCode = 22
+	CodeDuplicateProbe       FailCode = 23
+	CodeProbeKeysNotReceived FailCode = 24
+	CodeFailProbeFeeUpdate   FailCode = 25
 )
 
 // String returns the string representation of the failure code.
@@ -149,9 +154,89 @@ func (c FailCode) String() string {
 	case CodeExpiryTooFar:
 		return "ExpiryTooFar"
 
+	case CodeInsufficientCapacity:
+		return "InsufficientCapacity"
+
+	case CodeDuplicateProbe:
+		return "CodeDuplicateProbe"
+
+	case CodeProbeKeysNotReceived:
+		return "CodeProbeKeysNotReceived"
+
+	case CodeFailProbeFeeUpdate:
+		return "FailProbeFeeUpdate"
+
 	default:
 		return "<unknown>"
 	}
+}
+
+// FailProbeFeeUpdate ...
+type FailProbeFeeUpdate struct{}
+
+// Returns a human readable string describing the target FailureMessage.
+//
+// NOTE: Implements the error interface.
+func (f FailProbeFeeUpdate) Error() string {
+	return f.Code().String()
+}
+
+// Code returns the failure unique code.
+//
+// NOTE: Part of the FailureMessage interface.
+func (f FailProbeFeeUpdate) Code() FailCode {
+	return CodeFailProbeFeeUpdate
+}
+
+// FailInsufficientCapacity ...
+type FailInsufficientCapacity struct{}
+
+// Returns a human readable string describing the target FailureMessage.
+//
+// NOTE: Implements the error interface.
+func (f FailInsufficientCapacity) Error() string {
+	return f.Code().String()
+}
+
+// Code returns the failure unique code.
+//
+// NOTE: Part of the FailureMessage interface.
+func (f FailInsufficientCapacity) Code() FailCode {
+	return CodeInsufficientCapacity
+}
+
+// FailCodeDuplicateProbe A duplicate probe ID received.
+type FailCodeDuplicateProbe struct{}
+
+// Returns a human readable string describing the target FailureMessage.
+//
+// NOTE: Implements the error interface.
+func (f FailCodeDuplicateProbe) Error() string {
+	return f.Code().String()
+}
+
+// Code returns the failure unique code.
+//
+// NOTE: Part of the FailureMessage interface.
+func (f FailCodeDuplicateProbe) Code() FailCode {
+	return CodeDuplicateProbe
+}
+
+// FailCodeProbeKeysNotReceived A duplicate probe ID received.
+type FailCodeProbeKeysNotReceived struct{}
+
+// Returns a human readable string describing the target FailureMessage.
+//
+// NOTE: Implements the error interface.
+func (f FailCodeProbeKeysNotReceived) Error() string {
+	return f.Code().String()
+}
+
+// Code returns the failure unique code.
+//
+// NOTE: Part of the FailureMessage interface.
+func (f FailCodeProbeKeysNotReceived) Code() FailCode {
+	return CodeProbeKeysNotReceived
 }
 
 // FailInvalidRealm is returned if the realm byte is unknown.
@@ -1201,6 +1286,18 @@ func makeEmptyOnionError(code FailCode) (FailureMessage, error) {
 
 	case CodeExpiryTooFar:
 		return &FailExpiryTooFar{}, nil
+
+	case CodeInsufficientCapacity:
+		return &FailInsufficientCapacity{}, nil
+
+	case CodeDuplicateProbe:
+		return &FailCodeDuplicateProbe{}, nil
+
+	case CodeProbeKeysNotReceived:
+		return &FailCodeProbeKeysNotReceived{}, nil
+
+	case CodeFailProbeFeeUpdate:
+		return &FailProbeFeeUpdate{}, nil
 
 	default:
 		return nil, errors.Errorf("unknown error code: %v", code)

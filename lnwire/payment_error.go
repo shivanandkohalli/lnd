@@ -8,13 +8,13 @@ import (
 
 // PaymentError ..
 type PaymentError struct {
-	ProbeID     uint64
+	ProbeID     uint32
 	Destination [EmbeddingSize]byte
 	ErrorPubKey *btcec.PublicKey
 	// Reason is an onion-encrypted blob that details why the HTLC was
 	// failed. This blob is only fully decryptable by the initiator of the
 	// HTLC message.
-	Reason []byte
+	Reason [260]byte
 }
 
 // A compile time check to ensure UpdateFailHTLC implements the lnwire.Message
@@ -30,7 +30,7 @@ func (s *PaymentError) Decode(r io.Reader, pver uint32) error {
 		&s.ProbeID,
 		s.Destination[:],
 		&s.ErrorPubKey,
-		&s.Reason,
+		s.Reason[:],
 	)
 }
 
@@ -42,7 +42,7 @@ func (s *PaymentError) Encode(w io.Writer, pver uint32) error {
 		s.ProbeID,
 		s.Destination[:],
 		s.ErrorPubKey,
-		s.Reason,
+		s.Reason[:],
 	)
 }
 
@@ -64,7 +64,7 @@ func (s *PaymentError) MaxPayloadLength(uint32) uint32 {
 	var length uint32
 
 	// Length of the probeid
-	length += 8
+	length += 4
 
 	// Length of the destination
 	length += 80
@@ -73,7 +73,7 @@ func (s *PaymentError) MaxPayloadLength(uint32) uint32 {
 	length += 33
 
 	// Length of the Reason
-	length += 292
+	length += 260
 
 	return length
 }

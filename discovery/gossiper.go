@@ -576,6 +576,11 @@ func (d *AuthenticatedGossiper) ProcessRemoteAnnouncement(msg lnwire.Message,
 		errChan <- nil
 		d.SmGossip.ReceiveInvoiceProbeInfo(m)
 		return errChan
+	case *lnwire.PaymentError:
+		log.Info("Received PaymentError message")
+		d.SmGossip.errorMessageChan <- *m
+		errChan <- nil
+		return errChan
 	}
 
 	nMsg := &networkMsg{

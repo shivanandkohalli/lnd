@@ -59,6 +59,7 @@ const (
 	MsgDynamicInfoProbeMess                = 268
 	MsgTestMessage                         = 269
 	MsgProbeInitMess                       = 270
+	MsgPaymentError                        = 271
 )
 
 // String return the string representation of message type.
@@ -130,6 +131,8 @@ func (t MessageType) String() string {
 		return "TestMessage"
 	case MsgProbeInitMess:
 		return "ProbeInitMess"
+	case MsgPaymentError:
+		return "PaymentError"
 	default:
 		return "<unknown>"
 	}
@@ -241,6 +244,8 @@ func makeEmptyMessage(msgType MessageType) (Message, error) {
 		msg = &TestMessage{}
 	case MsgProbeInitMess:
 		msg = &ProbeInitMess{}
+	case MsgPaymentError:
+		msg = &PaymentError{}
 	default:
 		return nil, &UnknownMessage{msgType}
 	}
