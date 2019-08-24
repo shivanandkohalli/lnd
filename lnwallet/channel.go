@@ -341,6 +341,11 @@ type PaymentDescriptor struct {
 	// This is the embeddings/coordinates according to the SpeedyMurmurs algo
 	// for the destination node in the path
 	DestEmbedding [lnwire.EmbeddingSize]byte
+
+	ProbeID uint32
+
+	// To encrypt any errors that has to be transmitted back to the source node
+	ErrorPubKey *btcec.PublicKey
 }
 
 // PayDescsFromRemoteLogUpdates converts a slice of LogUpdates received from the
@@ -4517,6 +4522,10 @@ func (lc *LightningChannel) ReceiveHTLC(htlc *lnwire.UpdateAddHTLC) (uint64, err
 			"ID %d", htlc.ID, lc.remoteUpdateLog.htlcCounter)
 	}
 
+	errPubKey, err := btcec.ParsePubKey(htlc.ErrorPubKey[:], btcec.S256())
+	if err != nil {
+		fmt.Printf("Error, unable to parse serialized pubkey %v", err)
+	}
 	pd := &PaymentDescriptor{
 		EntryType:     Add,
 		RHash:         PaymentHash(htlc.PaymentHash),
@@ -4526,6 +4535,8 @@ func (lc *LightningChannel) ReceiveHTLC(htlc *lnwire.UpdateAddHTLC) (uint64, err
 		HtlcIndex:     lc.remoteUpdateLog.htlcCounter,
 		OnionBlob:     htlc.OnionBlob[:],
 		DestEmbedding: htlc.DestEmbedding,
+		ProbeID:       htlc.ProbeID,
+		ErrorPubKey:   errPubKey,
 	}
 
 	lc.remoteUpdateLog.appendHtlc(pd)

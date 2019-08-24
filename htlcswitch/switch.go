@@ -175,6 +175,17 @@ type Config struct {
 	// LogEventTicker is a signal instructing the htlcswitch to log
 	// aggregate stats about it's forwarding during the last interval.
 	LogEventTicker ticker.Ticker
+
+	// To send any errors back to the source node
+	SendErrorUpstream func(failure lnwire.FailureMessage, remoteKey *btcec.PublicKey,
+		dest []byte, probeID uint32) error
+}
+
+// AssignErrorFunc a helper function to assign the function pointer for sending errors
+// This should have been a part of the config init.
+func (s *Switch) AssignErrorFunc(SendErrorUpstream func(failure lnwire.FailureMessage,
+	remoteKey *btcec.PublicKey, dest []byte, probeID uint32) error) {
+	s.cfg.SendErrorUpstream = SendErrorUpstream
 }
 
 // Switch is the central messaging bus for all incoming/outgoing HTLCs.
@@ -1021,7 +1032,7 @@ func (s *Switch) handlePacketForward(packet *htlcPacket) error {
 
 		s.indexMtx.RLock()
 		targetLink, err := s.getLinkByShortID(packet.outgoingChanID)
-		if err != nil {
+		if err == nil {
 			s.indexMtx.RUnlock()
 
 			// If packet was forwarded from another channel link
@@ -1223,7 +1234,7 @@ func (s *Switch) failAddPacket(packet *htlcPacket,
 	// Encrypt the failure so that the sender will be able to read the error
 	// message. Since we failed this packet, we use EncryptFirstHop to
 	// obfuscate the failure for their eyes only.
-	reason, err := packet.obfuscator.EncryptFirstHop(failure)
+	reason, err := packet.obfuscator.EncryptFirstHop(lnwire.FailGenericPaymentError{})
 	if err != nil {
 		err := fmt.Errorf("unable to obfuscate "+
 			"error: %v", err)
@@ -1251,6 +1262,22 @@ func (s *Switch) failAddPacket(packet *htlcPacket,
 			packet.incomingChanID, err)
 		log.Error(err)
 		return err
+	}
+
+	switch htlc := packet.htlc.(type) {
+	case *lnwire.UpdateAddHTLC:
+		pubKey, err := btcec.ParsePubKey(htlc.ErrorPubKey[:], btcec.S256())
+		if err != nil {
+			log.Infof("Error failAddPacket pubkey parsing%v", err)
+		}
+		err = s.cfg.SendErrorUpstream(failure, pubKey, htlc.DestEmbedding[:], htlc.ProbeID)
+		if err != nil {
+			log.Infof("Error failAddPacket %v", err)
+		} else {
+			log.Infof("Sent error from the switch module")
+		}
+	default:
+		log.Infof("Error, failAddPacket htlc type is %T", htlc)
 	}
 
 	return failErr

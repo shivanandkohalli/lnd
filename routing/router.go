@@ -331,6 +331,15 @@ type ChannelRouter struct {
 	// TODO(shiva): This method must be inside Config and not here!!
 	GetNextHop func(dest []byte, amount lnwire.MilliSatoshi) (htlcswitch.ForwardingInfo,
 		error)
+
+	// GetPaymentForwardErrorKey returns the public key corresponding to the probe id
+	// which should be adding the update_add_htlc message
+	GetPaymentForwardErrorKey func(probeID uint32) (*btcec.PublicKey, error)
+
+	// The decrypted error for any forwarded payment message will be received on
+	// this channel
+	ForwardingErrorChan chan lnwire.FailureMessage
+
 	rejectMtx   sync.RWMutex
 	rejectCache map[uint64]struct{}
 
@@ -1770,13 +1779,24 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 
 		// Adding the current block height as its not added in the probe API
 		probe.CLTVAggregator = probe.CLTVAggregator + r.bestHeight
+		// Fetch the key that the hops will use to encrypt their errors and
+		// add it in this message
+
+		errPubKey, err := r.GetPaymentForwardErrorKey(probe.ProbeID)
+		if err != nil {
+			log.Infof("sendPayment %v", err)
+			return preImage, nil, err
+		}
+
 		htlcAdd := &lnwire.UpdateAddHTLC{
 			Amount:      probe.Amount,
 			Expiry:      probe.CLTVAggregator + r.bestHeight,
 			PaymentHash: payment.PaymentHash,
+			ProbeID:     probe.ProbeID,
 		}
 		copy(htlcAdd.OnionBlob[:], onionBlob)
 		copy(htlcAdd.DestEmbedding[:], destEmbedding)
+		copy(htlcAdd.ErrorPubKey[:], errPubKey.SerializeCompressed())
 
 		fwdInfo, err := r.GetNextHop(destEmbedding, probe.Amount)
 		if err != nil {
@@ -1795,19 +1815,28 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 		log.Infof("GetNextHop %v", fwdInfo)
 		log.Infof("Source routing first hop %v Timelock%d ", firstHop, route.TotalTimeLock)
 
-		// preImage, sendError = r.cfg.SendToSwitch(
-		// 	fwdInfo.NextHop, htlcAdd, circuit,
-		// )
 		if sendError != nil {
+
+			// Wait for the decrypted message here
+			// If no message received within a timeout, we don't wait anymore
+
+			var errMessage lnwire.FailureMessage
+			var timeout = false
+			select {
+			case errMessage = <-r.ForwardingErrorChan:
+				log.Infof("Received error via channel ForwardingErrorChan, %s", errMessage.Error())
+			case <-time.After(4 * time.Second):
+				log.Infof("Error, waiting for the error message ForwardingErrorChan timed out")
+				timeout = true
+			}
 			// An error occurred when attempting to send the
 			// payment, depending on the error type, we'll either
 			// continue to send using alternative routes, or simply
 			// terminate this attempt.
-			log.Errorf("Attempt to send payment %x failed: %v",
-				payment.PaymentHash, sendError)
+			log.Errorf("Attempt to send payment %x failed: %v %v",
+				payment.PaymentHash, sendError, errMessage)
 
-			fErr, ok := sendError.(*htlcswitch.ForwardingError)
-			if !ok {
+			if timeout {
 				return preImage, nil, sendError
 			}
 
@@ -1865,26 +1894,26 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 			// 	)
 			// }
 
-			switch fErr.FailureMessage.(type) {
+			switch errMessage.(type) {
 			// If the end destination didn't know they payment
 			// hash, then we'll terminate immediately.
 			case *lnwire.FailUnknownPaymentHash:
-				return preImage, nil, sendError
+				return preImage, nil, errMessage
 
 			// If we sent the wrong amount to the destination, then
 			// we'll exit early.
 			case *lnwire.FailIncorrectPaymentAmount:
-				return preImage, nil, sendError
+				return preImage, nil, errMessage
 
 			// If the time-lock that was extended to the final node
 			// was incorrect, then we can't proceed.
 			case *lnwire.FailFinalIncorrectCltvExpiry:
-				return preImage, nil, sendError
+				return preImage, nil, errMessage
 
 			// If we crafted an invalid onion payload for the final
 			// node, then we'll exit early.
 			case *lnwire.FailFinalIncorrectHtlcAmount:
-				return preImage, nil, sendError
+				return preImage, nil, errMessage
 
 			// Similarly, if the HTLC expiry that we extended to
 			// the final hop expires too soon, then will fail the
@@ -1893,71 +1922,71 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 			// TODO(roasbeef): can happen to to race condition, try
 			// again with recent block height
 			case *lnwire.FailFinalExpiryTooSoon:
-				return preImage, nil, sendError
+				return preImage, nil, errMessage
 
 			// If we erroneously attempted to cross a chain border,
 			// then we'll cancel the payment.
 			case *lnwire.FailInvalidRealm:
-				return preImage, nil, sendError
+				return preImage, nil, errMessage
 
 			// If we get a notice that the expiry was too soon for
 			// an intermediate node, then we'll prune out the node
 			// that sent us this error, as it doesn't now what the
 			// correct block height is.
 			case *lnwire.FailExpiryTooSoon:
-				return preImage, nil, sendError
+				return preImage, nil, errMessage
 
 			// If we hit an instance of onion payload corruption or
 			// an invalid version, then we'll exit early as this
 			// shouldn't happen in the typical case.
 			case *lnwire.FailInvalidOnionVersion:
-				return preImage, nil, sendError
+				return preImage, nil, errMessage
 			case *lnwire.FailInvalidOnionHmac:
-				return preImage, nil, sendError
+				return preImage, nil, errMessage
 			case *lnwire.FailInvalidOnionKey:
-				return preImage, nil, sendError
+				return preImage, nil, errMessage
 
 			// If we get a failure due to violating the minimum
 			// amount, we'll apply the new minimum amount and retry
 			// routing.
 			case *lnwire.FailAmountBelowMinimum:
-				return preImage, nil, sendError
+				return preImage, nil, errMessage
 
 			// If we get a failure due to a fee, we'll apply the
 			// new fee update, and retry our attempt using the
 			// newly updated fees.
 			case *lnwire.FailFeeInsufficient:
-				return preImage, nil, sendError
+				return preImage, nil, errMessage
 
 			// If we get the failure for an intermediate node that
 			// disagrees with our time lock values, then we'll
 			// apply the new delta value and try it once more.
 			case *lnwire.FailIncorrectCltvExpiry:
-				return preImage, nil, sendError
+				return preImage, nil, errMessage
 
 			// The outgoing channel that this node was meant to
 			// forward one is currently disabled, so we'll apply
 			// the update and continue.
 			case *lnwire.FailChannelDisabled:
-				return preImage, nil, sendError
+				return preImage, nil, errMessage
 
 			// It's likely that the outgoing channel didn't have
 			// sufficient capacity, so we'll prune this edge for
 			// now, and continue onwards with our path finding.
 			case *lnwire.FailTemporaryChannelFailure:
-				return preImage, nil, sendError
+				return preImage, nil, errMessage
 
 			// If the send fail due to a node not having the
 			// required features, then we'll note this error and
 			// continue.
 			case *lnwire.FailRequiredNodeFeatureMissing:
-				return preImage, nil, sendError
+				return preImage, nil, errMessage
 
 			// If the send fail due to a node not having the
 			// required features, then we'll note this error and
 			// continue.
 			case *lnwire.FailRequiredChannelFeatureMissing:
-				return preImage, nil, sendError
+				return preImage, nil, errMessage
 
 			// If the next hop in the route wasn't known or
 			// offline, we'll only the channel which we attempted
@@ -1967,16 +1996,16 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 			// returning errors in order to attempt to black list
 			// another node.
 			case *lnwire.FailUnknownNextPeer:
-				return preImage, nil, sendError
+				return preImage, nil, errMessage
 
 			// If the node wasn't able to forward for which ever
 			// reason, then we'll note this and continue with the
 			// routes.
 			case *lnwire.FailTemporaryNodeFailure:
-				return preImage, nil, sendError
+				return preImage, nil, errMessage
 
 			case *lnwire.FailPermanentNodeFailure:
-				return preImage, nil, sendError
+				return preImage, nil, errMessage
 
 			// If we crafted a route that contains a too long time
 			// lock for an intermediate node, we'll prune the node.
@@ -1988,13 +2017,13 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 			// that as a hint during future path finding through
 			// that node.
 			case *lnwire.FailExpiryTooFar:
-				return preImage, nil, sendError
+				return preImage, nil, errMessage
 
 			// If we get a permanent channel or node failure, then
 			// we'll prune the channel in both directions and
 			// continue with the rest of the routes.
 			case *lnwire.FailPermanentChannelFailure:
-				return preImage, nil, sendError
+				return preImage, nil, errMessage
 
 			default:
 				return preImage, nil, sendError

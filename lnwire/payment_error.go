@@ -11,6 +11,7 @@ type PaymentError struct {
 	ProbeID     uint32
 	Destination [EmbeddingSize]byte
 	ErrorPubKey *btcec.PublicKey
+	IsUpstream  uint8
 	// Reason is an onion-encrypted blob that details why the HTLC was
 	// failed. This blob is only fully decryptable by the initiator of the
 	// HTLC message.
@@ -30,6 +31,7 @@ func (s *PaymentError) Decode(r io.Reader, pver uint32) error {
 		&s.ProbeID,
 		s.Destination[:],
 		&s.ErrorPubKey,
+		&s.IsUpstream,
 		s.Reason[:],
 	)
 }
@@ -42,6 +44,7 @@ func (s *PaymentError) Encode(w io.Writer, pver uint32) error {
 		s.ProbeID,
 		s.Destination[:],
 		s.ErrorPubKey,
+		s.IsUpstream,
 		s.Reason[:],
 	)
 }
@@ -72,6 +75,8 @@ func (s *PaymentError) MaxPayloadLength(uint32) uint32 {
 	// Length of the pubkey
 	length += 33
 
+	// length of IsUpstream
+	length++
 	// Length of the Reason
 	length += 260
 

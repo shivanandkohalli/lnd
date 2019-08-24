@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/go-errors/errors"
@@ -242,6 +243,10 @@ type ChannelLinkConfig struct {
 	// speedyMurmurs algo
 	GetNextHop func(dest []byte, amount lnwire.MilliSatoshi) (ForwardingInfo,
 		error)
+
+	// To send any errors back to the source node
+	SendErrorUpstream func(failure lnwire.FailureMessage, remoteKey *btcec.PublicKey,
+		dest []byte, probeID uint32) error
 }
 
 // channelLink is the service which drives a channel's commitment update
@@ -2306,7 +2311,7 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
 
 				failure := lnwire.FailFinalExpiryTooSoon{}
 				l.sendHTLCError(
-					pd.HtlcIndex, &failure, obfuscator, pd.SourceRef,
+					pd.HtlcIndex, &failure, obfuscator, pd.SourceRef, pd,
 				)
 				needUpdate = true
 				continue
@@ -2324,7 +2329,7 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
 					" %v", err)
 				failure := lnwire.FailUnknownPaymentHash{}
 				l.sendHTLCError(
-					pd.HtlcIndex, failure, obfuscator, pd.SourceRef,
+					pd.HtlcIndex, failure, obfuscator, pd.SourceRef, pd,
 				)
 
 				needUpdate = true
@@ -2373,7 +2378,7 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
 
 				failure := lnwire.FailIncorrectPaymentAmount{}
 				l.sendHTLCError(
-					pd.HtlcIndex, failure, obfuscator, pd.SourceRef,
+					pd.HtlcIndex, failure, obfuscator, pd.SourceRef, pd,
 				)
 
 				needUpdate = true
@@ -2400,7 +2405,7 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
 
 				failure := lnwire.FailIncorrectPaymentAmount{}
 				l.sendHTLCError(
-					pd.HtlcIndex, failure, obfuscator, pd.SourceRef,
+					pd.HtlcIndex, failure, obfuscator, pd.SourceRef, pd,
 				)
 
 				needUpdate = true
@@ -2420,7 +2425,7 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
 				failure := lnwire.FailFinalExpiryTooSoon{}
 				l.sendHTLCError(
 					pd.HtlcIndex, failure, obfuscator,
-					pd.SourceRef,
+					pd.SourceRef, pd,
 				)
 
 				needUpdate = true
@@ -2436,7 +2441,7 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
 					fwdInfo.OutgoingCTLV,
 				)
 				l.sendHTLCError(
-					pd.HtlcIndex, failure, obfuscator, pd.SourceRef,
+					pd.HtlcIndex, failure, obfuscator, pd.SourceRef, pd,
 				)
 
 				needUpdate = true
@@ -2517,8 +2522,9 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
 					Amount:        fwdInfo.AmountToForward,
 					PaymentHash:   pd.RHash,
 					DestEmbedding: pd.DestEmbedding,
+					ProbeID:       pd.ProbeID,
 				}
-
+				copy(addMsg.ErrorPubKey[:], pd.ErrorPubKey.SerializeCompressed())
 				// // Finally, we'll encode the onion packet for
 				// // the _next_ hop using the hop iterator
 				// // decoded for the current hop.
@@ -2559,8 +2565,9 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
 				Amount:        fwdInfo.AmountToForward,
 				PaymentHash:   pd.RHash,
 				DestEmbedding: pd.DestEmbedding,
+				ProbeID:       pd.ProbeID,
 			}
-
+			copy(addMsg.ErrorPubKey[:], pd.ErrorPubKey.SerializeCompressed())
 			// Finally, we'll encode the onion packet for the
 			// _next_ hop using the hop iterator decoded for the
 			// current hop.
@@ -2583,7 +2590,7 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
 				}
 
 				l.sendHTLCError(
-					pd.HtlcIndex, failure, obfuscator, pd.SourceRef,
+					pd.HtlcIndex, failure, obfuscator, pd.SourceRef, pd,
 				)
 				needUpdate = true
 				continue
@@ -2688,9 +2695,11 @@ func (l *channelLink) handleBatchFwdErrs(errChan chan error) {
 // sendHTLCError functions cancels HTLC and send cancel message back to the
 // peer from which HTLC was received.
 func (l *channelLink) sendHTLCError(htlcIndex uint64, failure lnwire.FailureMessage,
-	e ErrorEncrypter, sourceRef *channeldb.AddRef) {
+	e ErrorEncrypter, sourceRef *channeldb.AddRef, pd *lnwallet.PaymentDescriptor) {
 
-	reason, err := e.EncryptFirstHop(failure)
+	// Sending a generic error message without revealing the error along the normal path,
+	// the actual error is sent using the scheme according to SpeedyMurmurs
+	reason, err := e.EncryptFirstHop(lnwire.FailGenericPaymentError{})
 	if err != nil {
 		log.Errorf("unable to obfuscate error: %v", err)
 		return
@@ -2702,6 +2711,10 @@ func (l *channelLink) sendHTLCError(htlcIndex uint64, failure lnwire.FailureMess
 		return
 	}
 
+	err = l.cfg.SendErrorUpstream(failure, pd.ErrorPubKey, pd.DestEmbedding[:], pd.ProbeID)
+	if err != nil {
+		log.Infof("Error, sendHTLCError %v", err)
+	}
 	l.cfg.Peer.SendMessage(false, &lnwire.UpdateFailHTLC{
 		ChanID: l.ChanID(),
 		ID:     htlcIndex,

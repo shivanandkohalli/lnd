@@ -1,6 +1,8 @@
 package lnwire
 
-import "io"
+import (
+	"io"
+)
 
 // OnionPacketSize is the size of the serialized Sphinx onion packet included
 // in each UpdateAddHTLC message. The breakdown of the onion packet is as
@@ -54,6 +56,11 @@ type UpdateAddHTLC struct {
 	// This is the embeddings/coordinates according to the SpeedyMurmurs algo
 	// for the destination node in the path
 	DestEmbedding [EmbeddingSize]byte
+
+	ProbeID uint32
+
+	// To encrypt any errors that has to be transmitted back to the source node
+	ErrorPubKey [33]byte
 }
 
 // NewUpdateAddHTLC returns a new empty UpdateAddHTLC message.
@@ -78,6 +85,8 @@ func (c *UpdateAddHTLC) Decode(r io.Reader, pver uint32) error {
 		&c.Expiry,
 		c.OnionBlob[:],
 		c.DestEmbedding[:],
+		&c.ProbeID,
+		c.ErrorPubKey[:],
 	)
 }
 
@@ -94,6 +103,8 @@ func (c *UpdateAddHTLC) Encode(w io.Writer, pver uint32) error {
 		c.Expiry,
 		c.OnionBlob[:],
 		c.DestEmbedding[:],
+		c.ProbeID,
+		c.ErrorPubKey[:],
 	)
 }
 
@@ -110,6 +121,6 @@ func (c *UpdateAddHTLC) MsgType() MessageType {
 //
 // This is part of the lnwire.Message interface.
 func (c *UpdateAddHTLC) MaxPayloadLength(uint32) uint32 {
-	// 1450 + 80
-	return 32 + 8 + 4 + 8 + 32 + 1366 + 80
+	// 1450 + 80 + 4 + 33
+	return 32 + 8 + 4 + 8 + 32 + 1366 + 80 + 4 + 33
 }

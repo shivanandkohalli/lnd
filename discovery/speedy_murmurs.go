@@ -102,7 +102,7 @@ type speedyMurmursGossip struct {
 
 	// The decrypted error for the dynamic probe message will be received on
 	// this channel
-	dynProbeError chan lnwire.FailureMessage
+	DynProbeError chan lnwire.FailureMessage
 
 	quit chan struct{}
 }
@@ -135,6 +135,10 @@ const (
 
 	// Error the inital probe keys for error encryption not received
 	errorProbeKeysNotReceived = 7
+
+	// Generic message that there is some error without revealing any
+	// other information
+	errorGenericPaymentError = 8
 )
 
 const (
@@ -149,9 +153,13 @@ const (
 
 // ErrorDecryptor to store the keys for error decryption of the messages.
 type ErrorDecryptor struct {
-	ProbeID   uint32
+	ProbeID uint32
+	// For upstream errors
 	ErrorKey1 *btcec.PrivateKey
+	// For downstream errors
 	ErrorKey2 *btcec.PrivateKey
+	// For payment forwarding errors
+	ErrorKey3 *btcec.PrivateKey
 }
 
 func (c errorType) string() string {
@@ -215,7 +223,7 @@ func newSpeedyMurmurGossip(nodeID uint32, spannTree *spanningTreeIdentity, broad
 		dynInfoProbeChan:         make(chan lnwire.DynamicInfoProbeMess),
 		errorMessageChan:         make(chan lnwire.PaymentError),
 		dynInfoResultChan:        make(chan lnwire.DynamicInfoProbeMess),
-		dynProbeError:            make(chan lnwire.FailureMessage),
+		DynProbeError:            make(chan lnwire.FailureMessage),
 		queryBandwidth:           bandwidth,
 		sendToPeerByPubKey:       sendToPeerByPubKey,
 		quit:                     make(chan struct{}),
@@ -673,7 +681,7 @@ func (s *speedyMurmursGossip) ProbeDynamicInfo(dest []uint32, payment *routing.L
 			// Wait for the decrypted message here
 			// If no message received within a timeout, we don't wait anymore
 			select {
-			case errMessage := <-s.dynProbeError:
+			case errMessage := <-s.DynProbeError:
 				log.Infof("Received error via channel dyn probe info, %s", errMessage.Error())
 				return m, errMessage
 			case <-time.After(4 * time.Second):
@@ -754,7 +762,9 @@ func (s *speedyMurmursGossip) sendErrorToPeer(e errorType, m lnwire.DynamicInfoP
 	// start sending the message to the downstream peer, as
 	// it is intended to reach the initiator of this probe
 	m.IsUpstream = 0
-	m.ErrorFlag = byte(e)
+	// Sending a generic error message along this path and the actual
+	// error will be sent along SM error encryption scheme
+	m.ErrorFlag = byte(errorGenericPaymentError)
 	// m.NodeID is the downstream peer who sent this message
 	err := s.sendToPeer(m.NodeID, &m)
 	if err != nil {
@@ -985,16 +995,30 @@ func pubKeyHash(pubKeyBytes [33]byte) uint32 {
 	return binary.BigEndian.Uint32(tempByteHash[:])
 }
 
+// GetPaymentForwardErrorKey returns the public key corresponding to the probe id
+// which should be adding the payment forwarding message.
+func (s *speedyMurmursGossip) GetPaymentForwardErrorKey(probeID uint32) (*btcec.PublicKey, error) {
+	keys, ok := s.probeErrorPrivKeyMapping[probeID]
+	if !ok {
+		log.Infof("getPaymentForwardErrorKey not existing in the map")
+		return nil, errors.New("getPaymentForwardErrorKey not existing in the map")
+	}
+
+	return keys.ErrorKey3.PubKey(), nil
+}
+
 func (s *speedyMurmursGossip) SendInvoiceProbeInfo(IdentityKey *btcec.PublicKey, amount uint64) (uint32, error) {
 	probeID := s.rand.Uint32()
 
 	k1, _ := btcec.NewPrivateKey(btcec.S256())
 	k2, _ := btcec.NewPrivateKey(btcec.S256())
+	k3, _ := btcec.NewPrivateKey(btcec.S256())
 
 	e := &ErrorDecryptor{
 		ProbeID:   probeID,
 		ErrorKey1: k1,
 		ErrorKey2: k2,
+		ErrorKey3: k3,
 	}
 
 	_, ok := s.probeErrorPrivKeyMapping[probeID]
@@ -1058,7 +1082,9 @@ func DecryptError(errorMessage *lnwire.PaymentError, localKey *btcec.PrivateKey)
 	Xor(plainError, errorMessage.Reason[:], stream)
 
 	mess, err := lnwire.DecodeFailure(bytes.NewReader(plainError), 0)
-
+	if err != nil {
+		return lnwire.FailEncryptionError{}, err
+	}
 	return mess, err
 }
 
@@ -1141,10 +1167,8 @@ func (s *speedyMurmursGossip) SendErrorUpstream(failure lnwire.FailureMessage, r
 		log.Infof("SendErrorUpstream %v", err)
 		return err
 	}
-	if nextNode == nil && err == nil {
-		// TODO: This is the destination, send the error to the source node here
-	}
 
+	log.Infof("Pubkey for error encryption intermediate %v", remoteKey)
 	errMessage, err := EncryptError(failure, remoteKey)
 	if err != nil {
 		return err
@@ -1152,12 +1176,29 @@ func (s *speedyMurmursGossip) SendErrorUpstream(failure lnwire.FailureMessage, r
 
 	copy(errMessage.Destination[:], dest)
 	errMessage.ProbeID = probeID
+	errMessage.IsUpstream = 1
 
-	pubkey, _ := nextNode.PubKey()
-	err = s.sendToPeerByPubKey(pubkey, errMessage)
-	if err != nil {
-		log.Infof("Error, SendUpstreamError unable to send message to next peer")
+	if nextNode == nil {
+		// This is the destination, send the error to the source node here
+		sourceInfo, ok := s.probeErrorPubKeyMapping[errMessage.ProbeID]
+		if !ok {
+			log.Infof("Error, SendErrorUpstream destination has not received the error pubkey")
+			return errors.New("Error, SendErrorUpstream destination has not received the error pubkey")
+		}
+		err = s.sendToPeerByPubKey(sourceInfo.NodePubKey, errMessage)
+		if err != nil {
+			log.Infof("Error, SendUpstreamError unable to send message to next peer")
+			return err
+		}
+	} else {
+		pubkey, _ := nextNode.PubKey()
+		err = s.sendToPeerByPubKey(pubkey, errMessage)
+		if err != nil {
+			log.Infof("Error, SendUpstreamError unable to send message to next peer")
+			return err
+		}
 	}
+
 	return nil
 }
 
@@ -1182,6 +1223,7 @@ func (s *speedyMurmursGossip) SendErrorDownstream(failure lnwire.FailureMessage,
 
 	// Populate the probeID, so that the receiving peer can also forward accordingly
 	errMessage.ProbeID = probeID
+	errMessage.IsUpstream = 0
 
 	err = s.sendToPeer(nodeID, errMessage)
 	if err != nil {
@@ -1249,30 +1291,37 @@ func (s *speedyMurmursGossip) processErrorMessages() {
 					}
 				}
 			case fwdErrTypeSource:
-				log.Info("processErrorMessages fwdErrTypeSource ")
-				errorDecryptor, ok := s.probeErrorPrivKeyMapping[m.ProbeID]
-				if !ok {
-					log.Infof("Error, processErrorMessages source node private key mappings not found")
-					continue
-				}
-
-				// Checking with the two keys here as we are not aware whether the received
-				// message was from upstream or downstream peer.
-				// TODO (shiva): fix by either adding stream info or convey it via the destination node
-				var failureMessage lnwire.FailureMessage
-				failureMessage, err := DecryptError(&m, errorDecryptor.ErrorKey1)
-				if err != nil {
-					failureMessage, err = DecryptError(&m, errorDecryptor.ErrorKey2)
-					if err != nil {
-						log.Infof("Error processErrorMessages decryption %v ", err)
+				{
+					log.Info("processErrorMessages fwdErrTypeSource ")
+					errorDecryptor, ok := s.probeErrorPrivKeyMapping[m.ProbeID]
+					if !ok {
+						log.Infof("Error, processErrorMessages source node private key mappings not found")
+						continue
 					}
-				}
 
-				select {
-				case s.dynProbeError <- failureMessage:
+					log.Infof("Pubkey for error encryption source %v", errorDecryptor.ErrorKey3.PubKey())
 
-				case <-time.After(4 * time.Second):
-					log.Infof("Error, Timed out processErrorMessages")
+					// Checking with the three keys here as we are not aware whether the received
+					// message was from upstream or downstream peer.
+					// TODO (shiva): fix by either adding stream info or convey it via the destination node
+					var failureMessage lnwire.FailureMessage
+					failureMessage, err := DecryptError(&m, errorDecryptor.ErrorKey1)
+					if err != nil {
+						failureMessage, err = DecryptError(&m, errorDecryptor.ErrorKey2)
+						if err != nil {
+							failureMessage, err = DecryptError(&m, errorDecryptor.ErrorKey3)
+							if err != nil {
+								log.Infof("Error processErrorMessages decryption %v ", err)
+							}
+						}
+					}
+
+					select {
+					case s.DynProbeError <- failureMessage:
+
+					case <-time.After(4 * time.Second):
+						log.Infof("Error, Timed out processErrorMessages")
+					}
 				}
 			}
 		}
@@ -1287,11 +1336,11 @@ func (s *speedyMurmursGossip) parseErrMessType(mess *lnwire.PaymentError) int {
 		return fwdErrTypeSource
 	}
 
-	b := make([]byte, 80)
+	// b := make([]byte, 80)
 
-	if reflect.DeepEqual(mess.Destination[:], b) {
-		return fwdErrTypeDownstream
-	}
+	// if reflect.DeepEqual(mess.Destination[:], b) {
+	// 	return fwdErrTypeDownstream
+	// }
 
 	dest, _ := s.ByteToIntArray(mess.Destination[:])
 	// Check if the current node is the destination
@@ -1302,6 +1351,10 @@ func (s *speedyMurmursGossip) parseErrMessType(mess *lnwire.PaymentError) int {
 		return fwdErrTypeDest
 	}
 
-	return fwdErrTypeUpstream
+	if mess.IsUpstream == 1 {
+		return fwdErrTypeUpstream
+	}
+
+	return fwdErrTypeDownstream
 
 }

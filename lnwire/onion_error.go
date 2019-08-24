@@ -83,6 +83,8 @@ const (
 	CodeDuplicateProbe       FailCode = 23
 	CodeProbeKeysNotReceived FailCode = 24
 	CodeFailProbeFeeUpdate   FailCode = 25
+	CodeEncryptionError      FailCode = 26
+	CodeGenericPaymentError  FailCode = 27
 )
 
 // String returns the string representation of the failure code.
@@ -166,9 +168,50 @@ func (c FailCode) String() string {
 	case CodeFailProbeFeeUpdate:
 		return "FailProbeFeeUpdate"
 
+	case CodeEncryptionError:
+		return "Encryption/Decryption Error"
+
+	case CodeGenericPaymentError:
+		return "GenericPaymentError"
+
 	default:
 		return "<unknown>"
 	}
+}
+
+// FailGenericPaymentError This is the generic error message sent without
+// informing what is the actual error.
+type FailGenericPaymentError struct{}
+
+// Returns a human readable string describing the target FailureMessage.
+//
+// NOTE: Implements the error interface.
+func (f FailGenericPaymentError) Error() string {
+	return f.Code().String()
+}
+
+// Code returns the failure unique code.
+//
+// NOTE: Part of the FailureMessage interface.
+func (f FailGenericPaymentError) Code() FailCode {
+	return CodeGenericPaymentError
+}
+
+// FailEncryptionError Any errors related to enc/dec of errors
+type FailEncryptionError struct{}
+
+// Returns a human readable string describing the target FailureMessage.
+//
+// NOTE: Implements the error interface.
+func (f FailEncryptionError) Error() string {
+	return f.Code().String()
+}
+
+// Code returns the failure unique code.
+//
+// NOTE: Part of the FailureMessage interface.
+func (f FailEncryptionError) Code() FailCode {
+	return CodeFailProbeFeeUpdate
 }
 
 // FailProbeFeeUpdate ...
@@ -1298,6 +1341,12 @@ func makeEmptyOnionError(code FailCode) (FailureMessage, error) {
 
 	case CodeFailProbeFeeUpdate:
 		return &FailProbeFeeUpdate{}, nil
+
+	case CodeEncryptionError:
+		return &FailEncryptionError{}, nil
+
+	case CodeGenericPaymentError:
+		return &FailGenericPaymentError{}, nil
 
 	default:
 		return nil, errors.Errorf("unknown error code: %v", code)

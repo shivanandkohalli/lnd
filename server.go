@@ -626,6 +626,9 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB, cc *chainControl,
 	// Assigning the 'GetNextHop' value seperates as it required the
 	// initialization of 'authGossiper' first.
 	s.chanRouter.GetNextHop = s.authGossiper.SmGossip.GetNextHop
+	s.chanRouter.GetPaymentForwardErrorKey = s.authGossiper.SmGossip.GetPaymentForwardErrorKey
+	s.chanRouter.ForwardingErrorChan = s.authGossiper.SmGossip.DynProbeError
+	s.htlcSwitch.AssignErrorFunc(s.authGossiper.SmGossip.SendErrorUpstream)
 
 	utxnStore, err := newNurseryStore(activeNetParams.GenesisHash, chanDB)
 	if err != nil {

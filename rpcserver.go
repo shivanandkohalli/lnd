@@ -2699,6 +2699,7 @@ func (r *rpcServer) dispatchPaymentIntent(
 
 			}
 
+			rpcsLog.Infof("Dynamic probe info is %v", probe)
 			b, err := r.server.authGossiper.SmGossip.IntToByteArray(destEmbedding, 0)
 			if err != nil {
 				rpcsLog.Infof("Error transforming int to byte array %v", err)
