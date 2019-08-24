@@ -1032,7 +1032,7 @@ func (s *Switch) handlePacketForward(packet *htlcPacket) error {
 
 		s.indexMtx.RLock()
 		targetLink, err := s.getLinkByShortID(packet.outgoingChanID)
-		if err == nil {
+		if err != nil {
 			s.indexMtx.RUnlock()
 
 			// If packet was forwarded from another channel link
