@@ -1004,6 +1004,29 @@ func (r *rpcServer) ConnectPeer(ctx context.Context,
 	return &lnrpc.ConnectPeerResponse{ProbeID: probeID}, nil
 }
 
+func (r *rpcServer) GetBandwidth(ctx context.Context,
+	in *lnrpc.GetBandwidthRequest) (*lnrpc.GetBandwidthResponse, error) {
+
+	pubKeyBytes, err := hex.DecodeString(in.PubKey)
+	if err != nil {
+		return nil, fmt.Errorf("unable to decode pubkey bytes: %v", err)
+	}
+
+	bandwidths, err := r.server.getbandwidth(pubKeyBytes)
+
+	if err != nil {
+		return &lnrpc.GetBandwidthResponse{
+			Bandwidth:   bandwidths,
+			ErrResponse: err.Error(),
+		}, nil
+	}
+	return &lnrpc.GetBandwidthResponse{
+		Bandwidth:   bandwidths,
+		ErrResponse: "no error",
+	}, nil
+
+}
+
 // DisconnectPeer attempts to disconnect one peer from another identified by a
 // given pubKey. In the case that we currently have a pending or active channel
 // with the target peer, this action will be disallowed.
@@ -2710,18 +2733,18 @@ func (r *rpcServer) dispatchPaymentIntent(
 
 			retryCount = retryCount + 1
 
-			fErr, ok := routerErr.(*htlcswitch.ForwardingError)
+			_, ok := routerErr.(*htlcswitch.ForwardingError)
 			if !ok {
 				break
 			}
 
-			switch fErr.FailureMessage.(type) {
-			case *lnwire.FailIncorrectPaymentAmount:
-				rpcsLog.Infof("Received incorrect payment error amount")
-			default:
-				retryCount = 5
-				break
-			}
+			// switch fErr.FailureMessage.(type) {
+			// case *lnwire.FailIncorrectPaymentAmount:
+			// 	rpcsLog.Infof("Received incorrect payment error amount")
+			// default:
+			// 	retryCount = 5
+			// 	break
+			// }
 
 			if retryCount >= 5 {
 				rpcsLog.Infof("Retry max attempts done, exiting")
