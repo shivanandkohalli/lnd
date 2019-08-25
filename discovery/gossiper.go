@@ -278,7 +278,7 @@ func New(cfg Config, selfKey *btcec.PublicKey) (*AuthenticatedGossiper, error) {
 		peerPubkeysMap:          make(map[uint32]*btcec.PublicKey),
 	}
 
-	gossiper.SmGossip = newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, cfg.Broadcast, gossiper.sendToPeerByHash, cfg.Router.FetchLightningNode, cfg.QueryBandwidth, cfg.SendToPeer)
+	gossiper.SmGossip = newSpeedyMurmurGossip(spannTreeID.nodeSpanTree.nodeID, spannTreeID, cfg.Broadcast, gossiper.sendToPeerByHash, cfg.Router.FetchLightningNode, cfg.QueryBandwidth, cfg.SendToPeer, gossiper.getPubkeyFromHash)
 	return gossiper, nil
 }
 
@@ -2739,4 +2739,16 @@ func (d *AuthenticatedGossiper) sendToPeerByHash(pubKeyHash uint32, msg lnwire.M
 // TODO(shiva): This function should be in speedyMurmurs.go
 func (d *AuthenticatedGossiper) GetLocalAddress() []uint32 {
 	return d.SmGossip.getPrefixEmbedding()
+}
+
+func (d *AuthenticatedGossiper) getPubkeyFromHash(pubKeyHash uint32) (*btcec.PublicKey, error) {
+	d.peerPubkeyMutex.RLock()
+	identityKey, ok := d.peerPubkeysMap[pubKeyHash]
+	d.peerPubkeyMutex.RUnlock()
+	if !ok {
+		log.Infof("%v,getPubkeyFromHash pubkeyHash is %d", d.peerPubkeysMap, pubKeyHash)
+		return nil, errors.New("Peer not added in hash->pubkey map")
+	}
+
+	return identityKey, nil
 }

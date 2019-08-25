@@ -1146,28 +1146,22 @@ func (s *server) getbandwidth(endPubKey []byte) ([]uint64, error) {
 	if err != nil {
 		return nil, err
 	}
-	srvrLog.Infof("bandwidth pubkey is %v", endPubKey)
 	err = selfNode.ForEachChannel(nil, func(_ *bbolt.Tx, chanInfo *channeldb.ChannelEdgeInfo,
 		outEdge, _ *channeldb.ChannelEdgePolicy) error {
-
-		srvrLog.Info("Channel iteration")
 		// If there is no edge policy for this candidate
 		// node, skip.
 		if outEdge == nil {
 			srvrLog.Info("No outEdge found while channel iteration")
 			return nil
 		}
-
 		// if !reflect.DeepEqual(nextNode, outEdge.Node) {
 		// 	return nil
 		// }
 		// Checking if the channel belongs to the 'nextNode' in question
 		if !reflect.DeepEqual(endPubKey, chanInfo.NodeKey1Bytes[:]) &&
 			!reflect.DeepEqual(endPubKey, chanInfo.NodeKey2Bytes[:]) {
-			srvrLog.Info("Next node not matching")
 			return nil
 		}
-		srvrLog.Infof("Outgoing channel for the next node found")
 		bwTemp := uint64(s.getEdgeBandwidth(chanInfo))
 		bandwidths = append(bandwidths, bwTemp)
 		return nil

@@ -104,6 +104,9 @@ type speedyMurmursGossip struct {
 	// this channel
 	DynProbeError chan lnwire.FailureMessage
 
+	// Retrive the corresponding *btcec.PublicKey for the hash of it stored
+	getPubkeyFromHash func(pubKeyHash uint32) (*btcec.PublicKey, error)
+
 	quit chan struct{}
 }
 
@@ -200,7 +203,7 @@ func (s *speedyMurmursGossip) stop() {
 
 // NewSpeedyMurmurGossip ....
 func newSpeedyMurmurGossip(nodeID uint32, spannTree *spanningTreeIdentity, broadCast func(skips map[routing.Vertex]struct{},
-	msg ...lnwire.Message) error, sendToPeer func(pubKeyHash uint32, msg lnwire.Message) error, fetchLightningNode func(routing.Vertex) (*channeldb.LightningNode, error), bandwidth func(edge *channeldb.ChannelEdgeInfo) lnwire.MilliSatoshi, sendToPeerByPubKey func(target *btcec.PublicKey, msg ...lnwire.Message) error) *speedyMurmursGossip {
+	msg ...lnwire.Message) error, sendToPeer func(pubKeyHash uint32, msg lnwire.Message) error, fetchLightningNode func(routing.Vertex) (*channeldb.LightningNode, error), bandwidth func(edge *channeldb.ChannelEdgeInfo) lnwire.MilliSatoshi, sendToPeerByPubKey func(target *btcec.PublicKey, msg ...lnwire.Message) error, getPubkeyFromHash func(pubKeyHash uint32) (*btcec.PublicKey, error)) *speedyMurmursGossip {
 	// TODO (shiva): Find a way that this channel gets assigned in their
 	// respective 'new' Methods
 	spannTree.processRecEmbChan = make(chan bool)
@@ -226,6 +229,7 @@ func newSpeedyMurmurGossip(nodeID uint32, spannTree *spanningTreeIdentity, broad
 		DynProbeError:            make(chan lnwire.FailureMessage),
 		queryBandwidth:           bandwidth,
 		sendToPeerByPubKey:       sendToPeerByPubKey,
+		getPubkeyFromHash:        getPubkeyFromHash,
 		quit:                     make(chan struct{}),
 	}
 }
@@ -600,7 +604,10 @@ func (s *speedyMurmursGossip) ProbeDynamicInfo(dest []uint32, payment *routing.L
 	// TODO (shiva): Add locks here
 	s.dynamicInfoTable[r] = payment
 
-	// payment.Amount = payment.Amount + (payment.Amount)/1000
+	// Adding a random value of 0.2% so that intermediate nodes cannot
+	// calculate path lengths to the source node.
+	randAmtIncrement := s.rand.Intn(int(payment.Amount * 2 / 1000))
+	payment.Amount = payment.Amount + lnwire.MilliSatoshi(randAmtIncrement)
 	nextNode, err := s.getNextNodeInRoute(dest, payment.Amount)
 	if err != nil {
 		return lnwire.DynamicInfoProbeMess{}, err
@@ -814,8 +821,11 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 					m.ErrorPubKey = errKeys.ErrorKey2
 					// Initiate downstream message
 					m.IsUpstream = 0
+
+					toSendNode := m.NodeID
+					m.NodeID = s.nodeID
 					// m.NodeID is the sender who sent this message
-					s.sendToPeer(m.NodeID, &m)
+					s.sendToPeer(toSendNode, &m)
 					continue
 				}
 
@@ -881,7 +891,7 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 						m.ErrorFlag = errorFeeUpdate
 					}
 				}
-				// Just forward the message downstream without modifying anything
+				m.NodeID = s.nodeID
 				err := s.sendToPeer(nodeID, &m)
 				if err != nil {
 					log.Infof("Error in forwarding message downstream %v", err)
@@ -908,12 +918,9 @@ func (s *speedyMurmursGossip) updateFee(m *lnwire.DynamicInfoProbeMess) error {
 	if err != nil {
 		return err
 	}
-	nextNode, err := s.getNextNodeInRoute(dest, m.Amount)
-	if err != nil {
-		return err
-	}
+
 	s.prefixMutex.RLock()
-	nextNodePrefix, ok := s.currentPrefixEmbedding[pubKeyHash(nextNode.PubKeyBytes)]
+	nextNodePrefix, ok := s.currentPrefixEmbedding[m.NodeID]
 	s.prefixMutex.RUnlock()
 
 	if !ok {
@@ -933,8 +940,19 @@ func (s *speedyMurmursGossip) updateFee(m *lnwire.DynamicInfoProbeMess) error {
 
 	log.Infof("Update fee, aggregating fee")
 
+	nextNodePubKey, err := s.getPubkeyFromHash(m.NodeID)
+	if err != nil {
+		log.Infof("update fee, failed to fetch the actual pubkey of next node")
+		return err
+	}
+	nextNode, err := s.fetchLightningNode(routing.NewVertex(nextNodePubKey))
+	if err != nil {
+		log.Infof("update fee, failed to fetch the lightning node of next node")
+		return err
+	}
 	selfNode, err := s.fetchLightningNode(routing.NewVertex(s.spannTree.selfPubKey))
 	if err != nil {
+		log.Infof("update fee, failed to fetch the source lightning node")
 		return err
 	}
 
@@ -967,6 +985,11 @@ func (s *speedyMurmursGossip) updateFee(m *lnwire.DynamicInfoProbeMess) error {
 		// 	return nil
 		// }
 		log.Info("Next node matched")
+
+		err := s.checkAmtValid(m.Amount+computeFee(m.Amount, chanPolicy), chanInfo, outEdge)
+		if err != nil {
+			return nil
+		}
 
 		// log.Infof("%v", selfNode.PubKeyBytes)
 		// log.Infof("%v", nextNode.PubKeyBytes)
