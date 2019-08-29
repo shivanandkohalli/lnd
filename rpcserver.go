@@ -2666,10 +2666,16 @@ func extractPaymentIntent(rpcPayReq *rpcPaymentRequest) (rpcPaymentIntent, error
 	return payIntent, nil
 }
 
+func currTimestamp() int64 {
+	return time.Now().UnixNano() / int64(time.Millisecond)
+}
+
 type paymentIntentResponse struct {
-	Route    *routing.Route
-	Preimage [32]byte
-	Err      error
+	Route       *routing.Route
+	Preimage    [32]byte
+	Err         error
+	PathLength  int32
+	ElapsedTime int64
 }
 
 // dispatchPaymentIntent attempts to fully dispatch an RPC payment intent.
@@ -2689,6 +2695,8 @@ func (r *rpcServer) dispatchPaymentIntent(
 		routerErr error
 	)
 
+	startTime := currTimestamp()
+	var pathLength int32
 	// If a route was specified, then we'll pass the route directly to the
 	// router, otherwise we'll create a payment session to execute it.
 	if len(payIntent.routes) == 0 {
@@ -2707,6 +2715,7 @@ func (r *rpcServer) dispatchPaymentIntent(
 		}
 
 		retryCount := 0
+
 		for {
 
 			probe, err := r.server.authGossiper.SmGossip.ProbeDynamicInfo(destEmbedding, payment, probeID)
@@ -2727,6 +2736,7 @@ func (r *rpcServer) dispatchPaymentIntent(
 			if err != nil {
 				rpcsLog.Infof("Error transforming int to byte array %v", err)
 			}
+			pathLength = int32(probe.PathLength)
 			preImage, route, routerErr = r.server.chanRouter.SendPayment(
 				payment, b, probe,
 			)
@@ -2764,7 +2774,7 @@ func (r *rpcServer) dispatchPaymentIntent(
 			payIntent.routes, payment,
 		)
 	}
-
+	elapsedTime := currTimestamp() - startTime
 	// If the route failed, then we'll return a nil save err, but a non-nil
 	// routing err.
 	if routerErr != nil {
@@ -2791,9 +2801,12 @@ func (r *rpcServer) dispatchPaymentIntent(
 		return nil, err
 	}
 
+	rpcsLog.Infof("Path length is %d", pathLength)
 	return &paymentIntentResponse{
-		Route:    route,
-		Preimage: preImage,
+		Route:       route,
+		Preimage:    preImage,
+		PathLength:  pathLength,
+		ElapsedTime: elapsedTime,
 	}, nil
 }
 
@@ -3033,9 +3046,11 @@ func (r *rpcServer) sendPaymentSync(ctx context.Context,
 	}
 
 	return &lnrpc.SendResponse{
-		PaymentHash:     payIntent.rHash[:],
-		PaymentPreimage: resp.Preimage[:],
-		PaymentRoute:    r.marshallRoute(resp.Route),
+		PaymentHash:      payIntent.rHash[:],
+		PaymentPreimage:  resp.Preimage[:],
+		PaymentRoute:     r.marshallRoute(resp.Route),
+		PathLength:       resp.PathLength,
+		PaymentTotalTime: resp.ElapsedTime,
 	}, nil
 }
 

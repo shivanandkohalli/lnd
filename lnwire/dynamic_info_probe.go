@@ -20,26 +20,26 @@ type DynamicInfoProbeMess struct {
 	// ProbeId Unique ID for every dynamic probe created
 	ProbeID        uint32
 	Amount         MilliSatoshi
-	FeeAggregator  uint32
 	CLTVAggregator uint32
 	Destination    [EmbeddingSize]byte
 	ErrorPubKey    *btcec.PublicKey
 	ErrorFlag      byte
 	IsUpstream     uint8
+	PathLength     uint8
 }
 
 // NewDynamicInfoProbeMess creates new instance of the probe message
-func NewDynamicInfoProbeMess(nodeID uint32, probeID uint32, amt MilliSatoshi, feeAggregator uint32,
-	cltvAggregator uint32, dest []byte, errorFlag uint8, isUpstream uint8, key *btcec.PublicKey) *DynamicInfoProbeMess {
+func NewDynamicInfoProbeMess(nodeID uint32, probeID uint32, amt MilliSatoshi,
+	cltvAggregator uint32, dest []byte, errorFlag uint8, isUpstream uint8, key *btcec.PublicKey, pathlength uint8) *DynamicInfoProbeMess {
 	mess := DynamicInfoProbeMess{
 		NodeID:         nodeID,
 		ProbeID:        probeID,
 		Amount:         amt,
-		FeeAggregator:  feeAggregator,
 		CLTVAggregator: cltvAggregator,
 		ErrorFlag:      errorFlag,
 		IsUpstream:     isUpstream,
 		ErrorPubKey:    key,
+		PathLength:     pathlength,
 	}
 
 	copy(mess.Destination[:], dest)
@@ -55,12 +55,12 @@ func (s *DynamicInfoProbeMess) Decode(r io.Reader, pver uint32) error {
 		&s.NodeID,
 		&s.ProbeID,
 		&s.Amount,
-		&s.FeeAggregator,
 		&s.CLTVAggregator,
 		s.Destination[:],
 		&s.ErrorPubKey,
 		&s.ErrorFlag,
 		&s.IsUpstream,
+		&s.PathLength,
 	)
 }
 
@@ -72,12 +72,12 @@ func (s *DynamicInfoProbeMess) Encode(w io.Writer, pver uint32) error {
 		s.NodeID,
 		s.ProbeID,
 		s.Amount,
-		s.FeeAggregator,
 		s.CLTVAggregator,
 		s.Destination[:],
 		s.ErrorPubKey,
 		s.ErrorFlag,
 		s.IsUpstream,
+		s.PathLength,
 	)
 }
 
@@ -96,6 +96,6 @@ func (s *DynamicInfoProbeMess) MsgType() MessageType {
 // This is part of the lnwire.Message interface.
 func (s *DynamicInfoProbeMess) MaxPayloadLength(uint32) uint32 {
 
-	//4 + 4 + 8 + 4 + 4 + 80 + 33 + 1 + 1
-	return 139
+	//4 + 4 + 8 + 4 + 80 + 33 + 1 + 1 + 1
+	return 140
 }

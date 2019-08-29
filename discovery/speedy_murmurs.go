@@ -629,7 +629,7 @@ func (s *speedyMurmursGossip) ProbeDynamicInfo(dest []uint32, payment *routing.L
 	if err != nil {
 		log.Infof("Error while converting 'ProbeDynamicInfo' %v", err)
 	}
-	mess := lnwire.NewDynamicInfoProbeMess(s.nodeID, r, payment.Amount, 0, 0, b, 0, 1, errDecryptor.ErrorKey1.PubKey())
+	mess := lnwire.NewDynamicInfoProbeMess(s.nodeID, r, payment.Amount, 0, b, 0, 1, errDecryptor.ErrorKey1.PubKey(), 1)
 	// log.Infof("Sender, error probe %v %v", errDecryptor.ErrorKey1.PubKey(), errDecryptor.ErrorKey2.PubKey())
 
 	// Adding the CLTV delta for the destination node, as the sender has
@@ -852,6 +852,8 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 				// Updating the nodeID with the one who will be sending this
 				// upstream message.
 				m.NodeID = s.nodeID
+				// Incrementing path length for evaluations only
+				m.PathLength = m.PathLength + 1
 				s.sendToPeer(pubKeyHash(nextNode.PubKeyBytes), &m)
 
 			} else if m.IsUpstream == 0 { // Downstream message
