@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"net"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -1136,6 +1137,71 @@ func (s *server) Stop() error {
 // NOTE: This function is safe for concurrent access.
 func (s *server) Stopped() bool {
 	return atomic.LoadInt32(&s.shutdown) != 0
+}
+
+func (s *server) getbandwidth(endPubKey []byte) ([]uint64, error) {
+
+	var bandwidths []uint64
+	selfNode, err := s.chanDB.ChannelGraph().SourceNode()
+	if err != nil {
+		return nil, err
+	}
+	err = selfNode.ForEachChannel(nil, func(_ *bbolt.Tx, chanInfo *channeldb.ChannelEdgeInfo,
+		outEdge, _ *channeldb.ChannelEdgePolicy) error {
+		// If there is no edge policy for this candidate
+		// node, skip.
+		if outEdge == nil {
+			srvrLog.Info("No outEdge found while channel iteration")
+			return nil
+		}
+		// if !reflect.DeepEqual(nextNode, outEdge.Node) {
+		// 	return nil
+		// }
+		// Checking if the channel belongs to the 'nextNode' in question
+		if !reflect.DeepEqual(endPubKey, chanInfo.NodeKey1Bytes[:]) &&
+			!reflect.DeepEqual(endPubKey, chanInfo.NodeKey2Bytes[:]) {
+			return nil
+		}
+		bwTemp := uint64(s.getEdgeBandwidth(chanInfo))
+		bandwidths = append(bandwidths, bwTemp)
+		return nil
+	})
+
+	return bandwidths, nil
+
+}
+
+func (s *server) getEdgeBandwidth(edge *channeldb.ChannelEdgeInfo) lnwire.MilliSatoshi {
+	// If we aren't on either side of this edge, then we'll
+	// just thread through the capacity of the edge as we
+	// know it.
+	if !bytes.Equal(edge.NodeKey1Bytes[:], s.identityPriv.PubKey().SerializeCompressed()) &&
+		!bytes.Equal(edge.NodeKey2Bytes[:], s.identityPriv.PubKey().SerializeCompressed()) {
+
+		srvrLog.Info("QueryBandwidth, we aren't on either side of channel")
+		return lnwire.NewMSatFromSatoshis(edge.Capacity)
+	}
+
+	cid := lnwire.NewChanIDFromOutPoint(&edge.ChannelPoint)
+	link, err := s.htlcSwitch.GetLink(cid)
+	if err != nil {
+		srvrLog.Info("QueryBandwidth, link isn't online")
+		// If the link isn't online, then we'll report
+		// that it has zero bandwidth to the router.
+		return 0
+	}
+
+	// If the link is found within the switch, but it isn't
+	// yet eligible to forward any HTLCs, then we'll treat
+	// it as if it isn't online in the first place.
+	if !link.EligibleToForward() {
+		srvrLog.Info("QueryBandwidth, link isn't eligible to forward any HTLCs")
+		return 0
+	}
+
+	// Otherwise, we'll return the current best estimate
+	// for the available bandwidth for the link.
+	return link.Bandwidth()
 }
 
 // configurePortForwarding attempts to set up port forwarding for the different

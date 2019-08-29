@@ -316,6 +316,9 @@ service Lightning {
         };
     }
 
+    rpc GetBandwidth (GetBandwidthRequest) returns (GetBandwidthResponse) {
+    }
+
     /** lncli: `listpeers`
     ListPeers returns a verbose listing of all currently active peers.
     */
@@ -927,6 +930,17 @@ message DisconnectPeerRequest {
     string pub_key = 1 [json_name = "pub_key"];
 }
 message DisconnectPeerResponse {
+}
+
+message GetBandwidthRequest {
+    /// The pubkey of the node to disconnect from
+    string pub_key = 1 [json_name = "pub_key"];
+}
+
+message GetBandwidthResponse {
+    /// The pubkey of the node to disconnect from
+    repeated uint64 bandwidth = 1 [json_name = "bandwidth"];
+    string errResponse = 2 [json_name = "errResponse"];
 }
 
 message HTLC {
