@@ -776,6 +776,7 @@ message SendResponse {
     bytes payment_preimage = 2 [json_name = "payment_preimage"];
     Route payment_route = 3 [json_name = "payment_route"];
     bytes payment_hash = 4 [json_name = "payment_hash"];
+    int64 payment_total_time = 6 [json_name = "payment_total_time"];
 }
 
 message SendToRouteRequest {

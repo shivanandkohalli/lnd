@@ -2642,9 +2642,14 @@ func extractPaymentIntent(rpcPayReq *rpcPaymentRequest) (rpcPaymentIntent, error
 }
 
 type paymentIntentResponse struct {
-	Route    *routing.Route
-	Preimage [32]byte
-	Err      error
+	Route       *routing.Route
+	Preimage    [32]byte
+	Err         error
+	ElapsedTime int64
+}
+
+func currTimestamp() int64 {
+	return time.Now().UnixNano() / int64(time.Millisecond)
 }
 
 // dispatchPaymentIntent attempts to fully dispatch an RPC payment intent.
@@ -2664,6 +2669,7 @@ func (r *rpcServer) dispatchPaymentIntent(
 		routerErr error
 	)
 
+	startTime := currTimestamp()
 	// If a route was specified, then we'll pass the route directly to the
 	// router, otherwise we'll create a payment session to execute it.
 	if len(payIntent.routes) == 0 {
@@ -2694,6 +2700,7 @@ func (r *rpcServer) dispatchPaymentIntent(
 		)
 	}
 
+	elapsedTime := currTimestamp() - startTime
 	// If the route failed, then we'll return a nil save err, but a non-nil
 	// routing err.
 	if routerErr != nil {
@@ -2721,8 +2728,9 @@ func (r *rpcServer) dispatchPaymentIntent(
 	}
 
 	return &paymentIntentResponse{
-		Route:    route,
-		Preimage: preImage,
+		Route:       route,
+		Preimage:    preImage,
+		ElapsedTime: elapsedTime,
 	}, nil
 }
 
@@ -2959,9 +2967,10 @@ func (r *rpcServer) sendPaymentSync(ctx context.Context,
 	}
 
 	return &lnrpc.SendResponse{
-		PaymentHash:     payIntent.rHash[:],
-		PaymentPreimage: resp.Preimage[:],
-		PaymentRoute:    r.marshallRoute(resp.Route),
+		PaymentHash:      payIntent.rHash[:],
+		PaymentPreimage:  resp.Preimage[:],
+		PaymentRoute:     r.marshallRoute(resp.Route),
+		PaymentTotalTime: resp.ElapsedTime,
 	}, nil
 }
 
