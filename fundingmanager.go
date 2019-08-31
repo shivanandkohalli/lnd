@@ -332,6 +332,12 @@ type fundingConfig struct {
 	// flood us with very small channels that would never really be usable
 	// due to fees.
 	MinChanSize btcutil.Amount
+
+	// AddNewPeer Updates information about the new peer which has opened
+	// a channel with us
+	AddNewPeer func(peerIdentityKey *btcec.PublicKey)
+	//IsPeerInSpanningTree To check if a peer is already in the spanning tree.
+	IsPeerInSpanningTree func(peerIdentityKey *btcec.PublicKey) bool
 }
 
 // fundingManager acts as an orchestrator/bridge between the wallet's
@@ -2157,6 +2163,10 @@ func (f *fundingManager) addToRouterGraph(completeChan *channeldb.OpenChannel,
 func (f *fundingManager) annAfterSixConfs(completeChan *channeldb.OpenChannel,
 	shortChanID *lnwire.ShortChannelID) error {
 
+	fndgLog.Infof("annAfterSixConfs sending announcements")
+	if f.cfg.IsPeerInSpanningTree(completeChan.IdentityPub) == false {
+		f.cfg.AddNewPeer(completeChan.IdentityPub)
+	}
 	// If this channel is not meant to be announced to the greater network,
 	// we'll only send our NodeAnnouncement to our counterparty to ensure we
 	// don't leak any of our information.

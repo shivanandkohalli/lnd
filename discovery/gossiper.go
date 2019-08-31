@@ -2673,6 +2673,23 @@ func (d *AuthenticatedGossiper) updateChannel(info *channeldb.ChannelEdgeInfo,
 	return chanAnn, chanUpdate, err
 }
 
+//IsPeerInSpanningTree To check if a peer is already in the spanning tree.
+func (d *AuthenticatedGossiper) IsPeerInSpanningTree(peerIdentityKey *btcec.PublicKey) bool {
+	d.peerPubkeyMutex.Lock()
+	defer d.peerPubkeyMutex.Unlock()
+
+	peerPubKey := peerIdentityKey.SerializeCompressed()
+	peerPubKeyHash := d.spannTreeID.sha256ByteArray(peerPubKey[:])
+
+	_, ok := d.spannTreeID.connectedNodeState[peerPubKeyHash]
+	if ok {
+		// Peer already registered, returing
+		log.Info("Peer already registered in spanning tree and SM, returing")
+		return true
+	}
+	return false
+}
+
 // AddNewPeer Updates information about the new peer which has joined in the
 // spanning tree related data structures.
 func (d *AuthenticatedGossiper) AddNewPeer(peerIdentityKey *btcec.PublicKey) {

@@ -953,6 +953,8 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB, cc *chainControl,
 			// channel bandwidth.
 			return uint16(lnwallet.MaxHTLCNumber / 2)
 		},
+		AddNewPeer:            s.authGossiper.AddNewPeer,
+		IsPeerInSpanningTree:  s.authGossiper.IsPeerInSpanningTree,
 		ZombieSweeperInterval: 1 * time.Minute,
 		ReservationTimeout:    10 * time.Minute,
 		MinChanSize:           btcutil.Amount(cfg.MinChanSize),
@@ -2794,7 +2796,7 @@ func (s *server) ConnectToPeer(addr *lnwire.NetAddress, perm bool, toOpenChannel
 		if toOpenChannel == false {
 			probeID, err = s.authGossiper.SmGossip.SendInvoiceProbeInfo(addr.IdentityKey, amount)
 		} else {
-			s.authGossiper.AddNewPeer(addr.IdentityKey)
+			// s.authGossiper.AddNewPeer(addr.IdentityKey)
 		}
 		return probeID, fmt.Errorf("already connected to peer: %v", peer)
 	}
@@ -2844,7 +2846,7 @@ func (s *server) ConnectToPeer(addr *lnwire.NetAddress, perm bool, toOpenChannel
 	case err := <-errChan:
 
 		if toOpenChannel {
-			s.authGossiper.AddNewPeer(addr.IdentityKey)
+			// s.authGossiper.AddNewPeer(addr.IdentityKey)
 			return 0, err
 		}
 		probeID, err = s.authGossiper.SmGossip.SendInvoiceProbeInfo(addr.IdentityKey, amount)
