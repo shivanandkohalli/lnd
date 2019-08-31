@@ -106,7 +106,10 @@ func (s *spanningTreeIdentity) buildSpanningTree() {
 			}
 
 		case <-processHelloTimer.C:
-			log.Infof("Number of received messages %d", len(s.receivedHelloMessage))
+			if len(s.receivedHelloMessage) > 0 {
+				log.Infof("SpanningTree Evaluation, Number of received messages: %d", len(s.receivedHelloMessage))
+			}
+
 			s.processHelloMessages()
 			s.printSpanningTreeIdentities()
 			// Send a signal to start processing the received prefix embeddings

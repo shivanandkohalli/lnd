@@ -290,7 +290,9 @@ func (s *speedyMurmursGossip) startGossip() {
 		// Wait for a signal from the spanning tree module to start
 		// processing
 		case <-s.processRecEmbChan:
-			log.Infof("Totall received %d Prefix messages", len(s.receivedPrefixNodes))
+			if len(s.receivedPrefixNodes) > 0 {
+				log.Infof("SpeedyMurmurs Eval Number of received messages %d", len(s.receivedPrefixNodes))
+			}
 			rootPortNode := s.spannTree.getRootPortID()
 			_, ok := s.receivedPrefixNodes[rootPortNode]
 			// We have received a new path embedding from the node
