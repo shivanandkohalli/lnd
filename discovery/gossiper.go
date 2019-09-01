@@ -720,6 +720,7 @@ func (d *deDupedAnnouncements) addMsg(message networkMsg) {
 
 	// Channel announcements are identified by the short channel id field.
 	case *lnwire.ChannelAnnouncement:
+		log.Info("Lightning Eval, received channel announcement")
 		deDupKey := msg.ShortChannelID
 		sender := routing.NewVertex(message.source)
 
@@ -743,6 +744,7 @@ func (d *deDupedAnnouncements) addMsg(message networkMsg) {
 	// Channel updates are identified by the (short channel id, flags)
 	// tuple.
 	case *lnwire.ChannelUpdate:
+		log.Info("Lightning Eval, received channel ChannelUpdate")
 		sender := routing.NewVertex(message.source)
 		deDupKey := channelUpdateID{
 			msg.ShortChannelID,

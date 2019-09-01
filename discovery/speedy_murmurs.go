@@ -284,21 +284,22 @@ func (s *speedyMurmursGossip) startGossip() {
 	// Starting the threads that will handle concurrent events
 	go s.processDynProbeInfo()
 	go s.processErrorMessages()
-	logTimer := time.NewTicker(10 * time.Second)
+	logTimer := time.NewTicker(60 * time.Second)
 	for {
 		select {
 		// Wait for a signal from the spanning tree module to start
 		// processing
 		case <-s.processRecEmbChan:
-			if len(s.receivedPrefixNodes) > 0 {
-				log.Infof("SpeedyMurmurs Eval Number of received messages %d", len(s.receivedPrefixNodes))
-			}
+
 			rootPortNode := s.spannTree.getRootPortID()
 			_, ok := s.receivedPrefixNodes[rootPortNode]
 			// We have received a new path embedding from the node
 			// connected to the root port. Update our embedding to this
 			// received value and broadcast to other nodes
-			log.Infof("Current root port node is %d", rootPortNode)
+			if len(s.receivedPrefixNodes) > 0 {
+				log.Infof("SpeedyMurmurs Eval Number of received messages %d", len(s.receivedPrefixNodes))
+				log.Infof("Current root port node is %d", rootPortNode)
+			}
 			if ok {
 				s.prefixMutex.Lock()
 

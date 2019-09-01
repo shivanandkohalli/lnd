@@ -2796,7 +2796,7 @@ func (s *server) ConnectToPeer(addr *lnwire.NetAddress, perm bool, toOpenChannel
 		if toOpenChannel == false {
 			probeID, err = s.authGossiper.SmGossip.SendInvoiceProbeInfo(addr.IdentityKey, amount)
 		} else {
-			// s.authGossiper.AddNewPeer(addr.IdentityKey)
+			s.authGossiper.AddNewPeer(addr.IdentityKey)
 		}
 		return probeID, fmt.Errorf("already connected to peer: %v", peer)
 	}
@@ -2846,7 +2846,7 @@ func (s *server) ConnectToPeer(addr *lnwire.NetAddress, perm bool, toOpenChannel
 	case err := <-errChan:
 
 		if toOpenChannel {
-			// s.authGossiper.AddNewPeer(addr.IdentityKey)
+			s.authGossiper.AddNewPeer(addr.IdentityKey)
 			return 0, err
 		}
 		probeID, err = s.authGossiper.SmGossip.SendInvoiceProbeInfo(addr.IdentityKey, amount)
