@@ -329,7 +329,7 @@ type ChannelRouter struct {
 	// Fetches the forwarding intstructions for the next hop according to
 	// speedyMurmurs algo
 	// TODO(shiva): This method must be inside Config and not here!!
-	GetNextHop func(dest []byte, amount lnwire.MilliSatoshi) (htlcswitch.ForwardingInfo,
+	GetNextHop func(dest []byte, amount lnwire.MilliSatoshi, probeID uint32) (htlcswitch.ForwardingInfo,
 		error)
 
 	// GetPaymentForwardErrorKey returns the public key corresponding to the probe id
@@ -1767,7 +1767,7 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 		// Generate the raw encoded sphinx packet to be included along
 		// with the htlcAdd message that we send directly to the
 		// switch.
-		onionBlob, circuit, err := generateSphinxPacket(
+		_, circuit, err := generateSphinxPacket(
 			route, payment.PaymentHash[:],
 		)
 		if err != nil {
@@ -1794,26 +1794,24 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 			PaymentHash: payment.PaymentHash,
 			ProbeID:     probe.ProbeID,
 		}
-		copy(htlcAdd.OnionBlob[:], onionBlob)
 		copy(htlcAdd.DestEmbedding[:], destEmbedding)
 		copy(htlcAdd.ErrorPubKey[:], errPubKey.SerializeCompressed())
 
-		fwdInfo, err := r.GetNextHop(destEmbedding, probe.Amount)
+		fwdInfo, err := r.GetNextHop(destEmbedding, probe.Amount, 0)
 		if err != nil {
 			log.Infof("GetNextHop %v", err)
 		}
 
+		firstHop := fwdInfo.NextHop
+		log.Infof("GetNextHop %v", fwdInfo)
+		log.Infof("Source routing first hop %v Timelock%d ", firstHop, route.TotalTimeLock)
+
 		// Attempt to send this payment through the network to complete
 		// the payment. If this attempt fails, then we'll continue on
 		// to the next available route.
-
-		firstHop := fwdInfo.NextHop
 		preImage, sendError = r.cfg.SendToSwitch(
 			firstHop, htlcAdd, circuit,
 		)
-
-		log.Infof("GetNextHop %v", fwdInfo)
-		log.Infof("Source routing first hop %v Timelock%d ", firstHop, route.TotalTimeLock)
 
 		if sendError != nil {
 

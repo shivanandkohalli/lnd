@@ -41,18 +41,6 @@ type UpdateAddHTLC struct {
 	// sufficient expiry value to allow her to redeem the incoming HTLC.
 	Expiry uint32
 
-	// OnionBlob is the raw serialized mix header used to route an HTLC in
-	// a privacy-preserving manner. The mix header is defined currently to
-	// be parsed as a 4-tuple: (groupElement, routingInfo, headerMAC,
-	// body).  First the receiving node should use the groupElement, and
-	// its current onion key to derive a shared secret with the source.
-	// Once the shared secret has been derived, the headerMAC should be
-	// checked FIRST. Note that the MAC only covers the routingInfo field.
-	// If the MAC matches, and the shared secret is fresh, then the node
-	// should strip off a layer of encryption, exposing the next hop to be
-	// used in the subsequent UpdateAddHTLC message.
-	OnionBlob [OnionPacketSize]byte
-
 	// This is the embeddings/coordinates according to the SpeedyMurmurs algo
 	// for the destination node in the path
 	DestEmbedding [EmbeddingSize]byte
@@ -83,7 +71,6 @@ func (c *UpdateAddHTLC) Decode(r io.Reader, pver uint32) error {
 		&c.Amount,
 		c.PaymentHash[:],
 		&c.Expiry,
-		c.OnionBlob[:],
 		c.DestEmbedding[:],
 		&c.ProbeID,
 		c.ErrorPubKey[:],
@@ -101,7 +88,6 @@ func (c *UpdateAddHTLC) Encode(w io.Writer, pver uint32) error {
 		c.Amount,
 		c.PaymentHash[:],
 		c.Expiry,
-		c.OnionBlob[:],
 		c.DestEmbedding[:],
 		c.ProbeID,
 		c.ErrorPubKey[:],

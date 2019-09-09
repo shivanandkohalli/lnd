@@ -292,13 +292,6 @@ type PaymentDescriptor struct {
 	// safely be removed.
 	removeCommitHeightRemote uint64
 	removeCommitHeightLocal  uint64
-
-	// OnionBlob is an opaque blob which is used to complete multi-hop
-	// routing.
-	//
-	// NOTE: Populated only on add payment descriptor entry types.
-	OnionBlob []byte
-
 	// ShaOnionBlob is a sha of the onion blob.
 	//
 	// NOTE: Populated only in payment descriptor with MalformedFail type.
@@ -387,8 +380,6 @@ func PayDescsFromRemoteLogUpdates(chanID lnwire.ShortChannelID, height uint64,
 					Index:  uint16(i),
 				},
 			}
-			pd.OnionBlob = make([]byte, len(wireMsg.OnionBlob))
-			copy(pd.OnionBlob[:], wireMsg.OnionBlob[:])
 
 		case *lnwire.UpdateFulfillHTLC:
 			pd = PaymentDescriptor{
@@ -697,8 +688,6 @@ func (c *commitment) toDiskCommit(ourCommit bool) *channeldb.ChannelCommitment {
 			LogIndex:      htlc.LogIndex,
 			Incoming:      false,
 		}
-		h.OnionBlob = make([]byte, len(htlc.OnionBlob))
-		copy(h.OnionBlob[:], htlc.OnionBlob)
 
 		if ourCommit && htlc.sig != nil {
 			h.Signature = htlc.sig.Serialize()
@@ -722,8 +711,6 @@ func (c *commitment) toDiskCommit(ourCommit bool) *channeldb.ChannelCommitment {
 			LogIndex:      htlc.LogIndex,
 			Incoming:      true,
 		}
-		h.OnionBlob = make([]byte, len(htlc.OnionBlob))
-		copy(h.OnionBlob[:], htlc.OnionBlob)
 
 		if ourCommit && htlc.sig != nil {
 			h.Signature = htlc.sig.Serialize()
@@ -790,7 +777,6 @@ func (lc *LightningChannel) diskHtlcToPayDesc(feeRate SatPerKWeight,
 		EntryType:          Add,
 		HtlcIndex:          htlc.HtlcIndex,
 		LogIndex:           htlc.LogIndex,
-		OnionBlob:          htlc.OnionBlob,
 		ourPkScript:        ourP2WSH,
 		ourWitnessScript:   ourWitnessScript,
 		theirPkScript:      theirP2WSH,
@@ -1505,8 +1491,6 @@ func (lc *LightningChannel) logUpdateToPayDesc(logUpdate *channeldb.LogUpdate,
 			LogIndex:              logUpdate.LogIndex,
 			addCommitHeightRemote: commitHeight,
 		}
-		pd.OnionBlob = make([]byte, len(wireMsg.OnionBlob))
-		copy(pd.OnionBlob[:], wireMsg.OnionBlob[:])
 
 		isDustRemote := htlcIsDust(false, false, feeRate,
 			wireMsg.Amount.ToSatoshis(), remoteDustLimit)
@@ -2858,7 +2842,6 @@ func (lc *LightningChannel) createCommitDiff(
 				Expiry:      pd.Timeout,
 				PaymentHash: pd.RHash,
 			}
-			copy(htlc.OnionBlob[:], pd.OnionBlob)
 			logUpdate.UpdateMsg = htlc
 
 			// Gather any references for circuits opened by this Add
@@ -4347,7 +4330,6 @@ func (lc *LightningChannel) ReceiveRevocation(revMsg *lnwire.RevokeAndAck) (
 				Expiry:      pd.Timeout,
 				PaymentHash: pd.RHash,
 			}
-			copy(htlc.OnionBlob[:], pd.OnionBlob)
 			logUpdate.UpdateMsg = htlc
 			addUpdates = append(addUpdates, logUpdate)
 
@@ -4491,7 +4473,6 @@ func (lc *LightningChannel) AddHTLC(htlc *lnwire.UpdateAddHTLC,
 		Amount:         htlc.Amount,
 		LogIndex:       lc.localUpdateLog.logIndex,
 		HtlcIndex:      lc.localUpdateLog.htlcCounter,
-		OnionBlob:      htlc.OnionBlob[:],
 		OpenCircuitKey: openKey,
 	}
 
@@ -4533,7 +4514,6 @@ func (lc *LightningChannel) ReceiveHTLC(htlc *lnwire.UpdateAddHTLC) (uint64, err
 		Amount:        htlc.Amount,
 		LogIndex:      lc.remoteUpdateLog.logIndex,
 		HtlcIndex:     lc.remoteUpdateLog.htlcCounter,
-		OnionBlob:     htlc.OnionBlob[:],
 		DestEmbedding: htlc.DestEmbedding,
 		ProbeID:       htlc.ProbeID,
 		ErrorPubKey:   errPubKey,

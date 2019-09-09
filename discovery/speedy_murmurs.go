@@ -107,6 +107,8 @@ type speedyMurmursGossip struct {
 	// Retrive the corresponding *btcec.PublicKey for the hash of it stored
 	getPubkeyFromHash func(pubKeyHash uint32) (*btcec.PublicKey, error)
 
+	advertisedRouteAmt map[uint32]lnwire.MilliSatoshi
+
 	quit chan struct{}
 }
 
@@ -230,6 +232,7 @@ func newSpeedyMurmurGossip(nodeID uint32, spannTree *spanningTreeIdentity, broad
 		queryBandwidth:           bandwidth,
 		sendToPeerByPubKey:       sendToPeerByPubKey,
 		getPubkeyFromHash:        getPubkeyFromHash,
+		advertisedRouteAmt:       make(map[uint32]lnwire.MilliSatoshi),
 		quit:                     make(chan struct{}),
 	}
 }
@@ -461,7 +464,7 @@ func (s *speedyMurmursGossip) IntToByteArray(a []uint32, appendInt uint32) ([]by
 // 	return nextHop, nil
 // }
 
-func (s *speedyMurmursGossip) GetNextHop(dest []byte, amount lnwire.MilliSatoshi) (htlcswitch.ForwardingInfo, error) {
+func (s *speedyMurmursGossip) GetNextHop(dest []byte, amount lnwire.MilliSatoshi, probeID uint32) (htlcswitch.ForwardingInfo, error) {
 
 	destEmbedding, err := s.ByteToIntArray(dest)
 	if err != nil {
@@ -478,6 +481,16 @@ func (s *speedyMurmursGossip) GetNextHop(dest []byte, amount lnwire.MilliSatoshi
 	}
 
 	fwdInfo, err := s.isSufficientCapacity(amount, node)
+
+	if probeID != 0 {
+		_, ok := s.advertisedRouteAmt[probeID]
+		if !ok {
+			log.Infof("error queried probeid and stored probeid are %d %v", probeID, s.advertisedRouteAmt)
+			return fwdInfo, errors.New("Error GetNextHop, probeID not in the advertised route")
+		}
+		fwdInfo.AmountToForward, _ = s.advertisedRouteAmt[probeID]
+
+	}
 	return fwdInfo, err
 }
 
@@ -600,7 +613,7 @@ func (s *speedyMurmursGossip) ProbeDynamicInfo(dest []uint32, payment *routing.L
 
 	errDecryptor, ok := s.probeErrorPrivKeyMapping[probeID]
 	if !ok {
-		log.Info("Error, do not have error keys corresponding to probeID")
+		log.Infof("Error, do not have error keys corresponding to probeID %d %v", probeID, dest)
 		return lnwire.DynamicInfoProbeMess{}, errors.New("Error, do not have error keys corresponding to probeID")
 	}
 	r := probeID
@@ -865,10 +878,10 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 				_, ok := s.dynamicInfoTable[m.ProbeID]
 				if ok {
 					// Update the fee information
-					err := s.updateFee(&m)
-					if err != nil {
-						log.Infof("Error in updating fee %v", err)
-					}
+					// err := s.updateFee(&m)
+					// if err != nil {
+					// 	log.Infof("Error in updating fee %v", err)
+					// }
 					log.Infof("Dynamic probe successfully reached sender, aggregated fee %d, CLTV aggregatd %d, Error pubkey %v", m.Amount, m.CLTVAggregator, m.ErrorPubKey)
 					// Send the probe result on the channel for the one who is waiting for it
 					select {
@@ -887,6 +900,8 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 				}
 
 				if errorType(m.ErrorFlag) == errorNone {
+					// Store the amount that we need to forward when we get the htlc for this probeid
+					s.advertisedRouteAmt[m.ProbeID] = m.Amount
 					// Update the fee information in the message only if there is
 					// no error
 					err := s.updateFee(&m)
@@ -938,10 +953,10 @@ func (s *speedyMurmursGossip) updateFee(m *lnwire.DynamicInfoProbeMess) error {
 	}
 	log.Infof("Dest: %v", dest)
 	log.Infof("Next: %v", nextNodePrefix)
-	if reflect.DeepEqual(dest, nextNodePrefix) {
-		log.Infof("Update fee, destination node")
-		return nil
-	}
+	// if reflect.DeepEqual(dest, nextNodePrefix) {
+	// 	log.Infof("Update fee, destination node")
+	// 	return nil
+	// }
 
 	log.Infof("Update fee, aggregating fee")
 

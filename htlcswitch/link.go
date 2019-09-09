@@ -241,7 +241,7 @@ type ChannelLinkConfig struct {
 
 	// Fetches the forwarding intstructions for the next hop according to
 	// speedyMurmurs algo
-	GetNextHop func(dest []byte, amount lnwire.MilliSatoshi) (ForwardingInfo,
+	GetNextHop func(dest []byte, amount lnwire.MilliSatoshi, probeID uint32) (ForwardingInfo,
 		error)
 
 	// To send any errors back to the source node
@@ -2220,7 +2220,7 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
 
 	for i, pd := range lockedInHtlcs {
 
-		fwdInfo, err := l.cfg.GetNextHop(pd.DestEmbedding[:], pd.Amount)
+		fwdInfo, err := l.cfg.GetNextHop(pd.DestEmbedding[:], pd.Amount, pd.ProbeID)
 		if err != nil {
 			log.Infof("GetNextHop %v", err)
 		}
@@ -2245,11 +2245,6 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
 		// HTLC itself to decide if: we should forward it, cancel it,
 		// or are able to settle it (and it adheres to our fee related
 		// constraints).
-
-		// Fetch the onion blob that was included within this processed
-		// payment descriptor.
-		var onionBlob [lnwire.OnionPacketSize]byte
-		copy(onionBlob[:], pd.OnionBlob)
 		//**********************************************************************************
 		// Before adding the new htlc to the state machine, parse the
 		// onion object in order to obtain the routing information with
