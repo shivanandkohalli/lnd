@@ -547,7 +547,6 @@ func generatePayment(invoiceAmt, htlcAmt lnwire.MilliSatoshi, timelock uint32,
 		PaymentHash: rhash,
 		Amount:      htlcAmt,
 		Expiry:      timelock,
-		OnionBlob:   blob,
 	}
 
 	return invoice, htlc, nil

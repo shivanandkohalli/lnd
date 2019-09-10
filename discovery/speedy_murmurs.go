@@ -107,7 +107,7 @@ type speedyMurmursGossip struct {
 	// Retrive the corresponding *btcec.PublicKey for the hash of it stored
 	getPubkeyFromHash func(pubKeyHash uint32) (*btcec.PublicKey, error)
 
-	advertisedRouteAmt map[uint32]lnwire.MilliSatoshi
+	advertisedRoute map[uint32]htlcswitch.ForwardingInfo
 
 	quit chan struct{}
 }
@@ -232,7 +232,7 @@ func newSpeedyMurmurGossip(nodeID uint32, spannTree *spanningTreeIdentity, broad
 		queryBandwidth:           bandwidth,
 		sendToPeerByPubKey:       sendToPeerByPubKey,
 		getPubkeyFromHash:        getPubkeyFromHash,
-		advertisedRouteAmt:       make(map[uint32]lnwire.MilliSatoshi),
+		advertisedRoute:          make(map[uint32]htlcswitch.ForwardingInfo),
 		quit:                     make(chan struct{}),
 	}
 }
@@ -480,17 +480,13 @@ func (s *speedyMurmursGossip) GetNextHop(dest []byte, amount lnwire.MilliSatoshi
 		return htlcswitch.ForwardingInfo{NextHop: htlcswitch.ExitHop, AmountToForward: amount}, nil
 	}
 
-	fwdInfo, err := s.isSufficientCapacity(amount, node)
-
-	if probeID != 0 {
-		_, ok := s.advertisedRouteAmt[probeID]
-		if !ok {
-			log.Infof("error queried probeid and stored probeid are %d %v", probeID, s.advertisedRouteAmt)
-			return fwdInfo, errors.New("Error GetNextHop, probeID not in the advertised route")
-		}
-		fwdInfo.AmountToForward, _ = s.advertisedRouteAmt[probeID]
-
+	// fwdInfo, err := s.isSufficientCapacity(amount, node)
+	fwdInfo, ok := s.advertisedRoute[probeID]
+	if !ok {
+		log.Infof("error queried probeid and stored probeid are %d %v", probeID, s.advertisedRoute)
+		return fwdInfo, errors.New("Error GetNextHop, probeID not in the advertised route")
 	}
+
 	return fwdInfo, err
 }
 
@@ -622,7 +618,7 @@ func (s *speedyMurmursGossip) ProbeDynamicInfo(dest []uint32, payment *routing.L
 
 	// Adding a random value of 0.2% so that intermediate nodes cannot
 	// calculate path lengths to the source node.
-	randAmtIncrement := s.rand.Intn(int(payment.Amount * 2 / 1000))
+	randAmtIncrement := s.rand.Intn(int(payment.Amount * 3 / 1000))
 	payment.Amount = payment.Amount + lnwire.MilliSatoshi(randAmtIncrement)
 	nextNode, err := s.getNextNodeInRoute(dest, payment.Amount)
 	if err != nil {
@@ -635,15 +631,17 @@ func (s *speedyMurmursGossip) ProbeDynamicInfo(dest []uint32, payment *routing.L
 
 	// Check if any channel to the 'nextNode' has sufficient balance
 	// to make the payment
-	_, err = s.isSufficientCapacity(payment.Amount, nextNode)
+	fwdInfo, err := s.isSufficientCapacity(payment.Amount, nextNode)
 	if err != nil {
 		log.Infof("Error ProbeDynamicInfo %v", err)
+		return lnwire.DynamicInfoProbeMess{}, err
 	}
 	// Converting the destination uint slice to byte slice for sending
 	// it to the next node in route
 	b, err := s.IntToByteArray(dest[:], 0)
 	if err != nil {
 		log.Infof("Error while converting 'ProbeDynamicInfo' %v", err)
+		return lnwire.DynamicInfoProbeMess{}, err
 	}
 	mess := lnwire.NewDynamicInfoProbeMess(s.nodeID, r, payment.Amount, 0, b, 0, 1, errDecryptor.ErrorKey1.PubKey(), 1)
 	// log.Infof("Sender, error probe %v %v", errDecryptor.ErrorKey1.PubKey(), errDecryptor.ErrorKey2.PubKey())
@@ -683,6 +681,7 @@ func (s *speedyMurmursGossip) ProbeDynamicInfo(dest []uint32, payment *routing.L
 		// decrypting error messages. Need to clear the memory else it will
 		// keep growing
 		//delete(s.dynamicInfoTable, mess.ProbeID)
+		s.advertisedRoute[probeID] = htlcswitch.ForwardingInfo{AmountToForward: payment.Amount, NextHop: fwdInfo.NextHop, OutgoingCTLV: fwdInfo.OutgoingCTLV}
 		return *mess, nil
 	}
 
@@ -712,6 +711,8 @@ func (s *speedyMurmursGossip) ProbeDynamicInfo(dest []uint32, payment *routing.L
 			}
 			return m, errors.New(errorType(m.ErrorFlag).string())
 		}
+
+		s.advertisedRoute[probeID] = htlcswitch.ForwardingInfo{AmountToForward: m.Amount, NextHop: fwdInfo.NextHop, OutgoingCTLV: fwdInfo.OutgoingCTLV}
 		return m, nil
 	}
 
@@ -901,14 +902,16 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 
 				if errorType(m.ErrorFlag) == errorNone {
 					// Store the amount that we need to forward when we get the htlc for this probeid
-					s.advertisedRouteAmt[m.ProbeID] = m.Amount
+					amtToForward := m.Amount
 					// Update the fee information in the message only if there is
 					// no error
-					err := s.updateFee(&m)
+					chanToForward, chanTimeLockDelta, err := s.updateFee(&m)
 					if err != nil {
 						log.Infof("Error in updating fee %v", err)
 						s.SendErrorDownstream(lnwire.FailProbeFeeUpdate{}, m.ErrorPubKey, m.ProbeID)
 						m.ErrorFlag = errorFeeUpdate
+					} else {
+						s.advertisedRoute[m.ProbeID] = htlcswitch.ForwardingInfo{NextHop: chanToForward, AmountToForward: amtToForward, OutgoingCTLV: chanTimeLockDelta}
 					}
 				}
 				m.NodeID = s.nodeID
@@ -930,13 +933,17 @@ func (s *speedyMurmursGossip) processDynProbeInfo() {
 
 // Calculates the fees and timelock value for the next node in the path
 // and updates the received 'DynamicInfoProbeMess' with appropriate values
-func (s *speedyMurmursGossip) updateFee(m *lnwire.DynamicInfoProbeMess) error {
+func (s *speedyMurmursGossip) updateFee(m *lnwire.DynamicInfoProbeMess) (lnwire.ShortChannelID, uint32, error) {
+
+	var chanFound = false
+	var chanToForward lnwire.ShortChannelID
+	var chanTimeLockDelta uint32
 
 	// Check if the next node in the path is the destination
 	// If yes, then do not aggregate the fees as no fee is charged for final hop
 	dest, err := s.ByteToIntArray(m.Destination[:])
 	if err != nil {
-		return err
+		return lnwire.ShortChannelID{}, chanTimeLockDelta, err
 	}
 
 	s.prefixMutex.RLock()
@@ -963,21 +970,18 @@ func (s *speedyMurmursGossip) updateFee(m *lnwire.DynamicInfoProbeMess) error {
 	nextNodePubKey, err := s.getPubkeyFromHash(m.NodeID)
 	if err != nil {
 		log.Infof("update fee, failed to fetch the actual pubkey of next node")
-		return err
+		return lnwire.ShortChannelID{}, chanTimeLockDelta, err
 	}
 	nextNode, err := s.fetchLightningNode(routing.NewVertex(nextNodePubKey))
 	if err != nil {
 		log.Infof("update fee, failed to fetch the lightning node of next node")
-		return err
+		return lnwire.ShortChannelID{}, chanTimeLockDelta, err
 	}
 	selfNode, err := s.fetchLightningNode(routing.NewVertex(s.spannTree.selfPubKey))
 	if err != nil {
 		log.Infof("update fee, failed to fetch the source lightning node")
-		return err
+		return lnwire.ShortChannelID{}, chanTimeLockDelta, err
 	}
-
-	var chanFound = false
-
 	err = selfNode.ForEachChannel(nil, func(_ *bbolt.Tx, chanInfo *channeldb.ChannelEdgeInfo,
 		outEdge, chanPolicy *channeldb.ChannelEdgePolicy) error {
 
@@ -1022,15 +1026,17 @@ func (s *speedyMurmursGossip) updateFee(m *lnwire.DynamicInfoProbeMess) error {
 
 		m.Amount = m.Amount + computeFee(m.Amount, chanPolicy)
 		m.CLTVAggregator = m.CLTVAggregator + uint32(chanPolicy.TimeLockDelta)
+		chanToForward = lnwire.NewShortChanIDFromInt(chanInfo.ChannelID)
+		chanTimeLockDelta = uint32(outEdge.TimeLockDelta)
 		chanFound = true
 		log.Infof("Updated amt, cltv %d, %d", m.Amount, m.CLTVAggregator)
 		return nil
 	})
 
 	if chanFound == false {
-		return errors.New("No channel found with sufficient balance")
+		return lnwire.ShortChannelID{}, chanTimeLockDelta, errors.New("No channel found with sufficient balance")
 	}
-	return nil
+	return chanToForward, chanTimeLockDelta, nil
 }
 
 func pubKeyHash(pubKeyBytes [33]byte) uint32 {

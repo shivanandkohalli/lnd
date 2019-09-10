@@ -1797,7 +1797,7 @@ func (r *ChannelRouter) sendPayment(payment *LightningPayment,
 		copy(htlcAdd.DestEmbedding[:], destEmbedding)
 		copy(htlcAdd.ErrorPubKey[:], errPubKey.SerializeCompressed())
 
-		fwdInfo, err := r.GetNextHop(destEmbedding, probe.Amount, 0)
+		fwdInfo, err := r.GetNextHop(destEmbedding, probe.Amount, probe.ProbeID)
 		if err != nil {
 			log.Infof("GetNextHop %v", err)
 		}
