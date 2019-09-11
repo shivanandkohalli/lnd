@@ -2185,7 +2185,7 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
 				RHash:        pd.RHash[:],
 				IncomingCltv: pd.Timeout,
 			}
-
+			log.Infof("Lightning eval, onion message received")
 			decodeReqs = append(decodeReqs, req)
 		}
 	}
